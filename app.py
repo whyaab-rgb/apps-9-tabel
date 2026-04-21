@@ -10,10 +10,7 @@ st.set_page_config(page_title="BSJP Grid 9 Live", layout="wide")
 # =========================================================
 # CONFIG
 # =========================================================
-SCREENER_API_URL = "http://127.0.0.1:8000/bsjp"
-API_HEADERS = {
-    "Content-Type": "application/json",
-}
+
 REQUEST_TIMEOUT = 8
 DEFAULT_REFRESH_SECONDS = 5
 
