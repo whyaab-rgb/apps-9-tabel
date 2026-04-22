@@ -933,65 +933,34 @@ def render_toolbar_info(period_label: str, filtered_count: int) -> None:
 
 
 def render_stock_cards(df: pd.DataFrame, limit: int = 12) -> None:
-    st.markdown('<div class="section-title">Top Ranked Signals</div>', unsafe_allow_html=True)
+    st.markdown("### Top Ranked Signals")
 
     for _, row in df.head(limit).iterrows():
-        badge_cls = signal_badge_class(row["signal"])
-        pct_cls = "pct-pos" if row["pct_change"] >= 0 else "pct-neg"
-        strength_width = score_to_strength_width(row["total_score"])
         top_buy, top_sell = assign_top_brokers(row["ticker"])
 
-        tag_html = "".join([f'<span class="tag">{tag}</span>' for tag in row["tags"]])
+        with st.container():
+            c1, c2 = st.columns([3, 1])
 
-        html = f"""
-        <div class="stock-card">
-            <div class="row-between">
-                <div>
-                    <div class="row-wrap">
-                        <div class="ticker">{row["ticker"]}</div>
-                        <span class="badge {badge_cls}">{row["signal"]}</span>
-                    </div>
-                    <div class="company">{row["company"]}</div>
-                </div>
-                <div>
-                    <div class="score-box">
-                        <div class="score-label">Score</div>
-                        <div class="score-value">{row["total_score"]:.0f}</div>
-                    </div>
-                    <div class="price-box">
-                        <div class="price">{row["last_price"]:,.0f}</div>
-                        <div class="{pct_cls}">{row["pct_change"]:+.2f}%</div>
-                    </div>
-                </div>
-            </div>
+            with c1:
+                st.markdown(f"## {row['ticker']}  •  {row['signal']}")
+                st.caption(row["company"])
 
-            <div class="row-wrap" style="margin-top:0.65rem;">
-                {tag_html}
-            </div>
+                tags = row["tags"] if isinstance(row["tags"], list) else []
+                if tags:
+                    st.write(" | ".join(tags))
 
-            <div class="progress-wrap">
-                <div class="progress-track">
-                    <div class="progress-fill" style="width:{strength_width}%;"></div>
-                </div>
-            </div>
+            with c2:
+                st.metric("Score", f"{row['total_score']:.0f}", f"{row['pct_change']:+.2f}%")
+                st.write(f"Price: {row['last_price']:,.0f}")
 
-            <div class="mini-grid">
-                <div class="mini-box">
-                    <div class="mini-label">Net Akumulasi</div>
-                    <div class="mini-value">{human_money(row["broker_5d"])}</div>
-                </div>
-                <div class="mini-box">
-                    <div class="mini-label">Top Buy / Sell</div>
-                    <div class="mini-value">{top_buy} / {top_sell}</div>
-                </div>
-                <div class="mini-box">
-                    <div class="mini-label">Vol Ratio</div>
-                    <div class="mini-value">{row["volume_ratio"]:.2f}x</div>
-                </div>
-            </div>
-        </div>
-        """
-        st.markdown(html, unsafe_allow_html=True)
+            st.progress(min(max(int(row["total_score"]), 0), 100))
+
+            a, b, c = st.columns(3)
+            a.metric("Net Akumulasi", human_money(row["broker_5d"]))
+            b.metric("Top Buy / Sell", f"{top_buy} / {top_sell}")
+            c.metric("Vol Ratio", f"{row['volume_ratio']:.2f}x")
+
+            st.divider()
 
 
 def render_chart(hist: pd.DataFrame, ticker: str) -> None:
