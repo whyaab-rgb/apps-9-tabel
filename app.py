@@ -1,5 +1,4 @@
 # app.py
-import math
 import time
 from datetime import datetime
 from typing import Dict, List, Tuple
@@ -10,9 +9,6 @@ import plotly.graph_objects as go
 import streamlit as st
 
 
-# =========================================================
-# PAGE CONFIG
-# =========================================================
 st.set_page_config(
     page_title="Bandarmology Screener",
     page_icon="📈",
@@ -21,9 +17,6 @@ st.set_page_config(
 )
 
 
-# =========================================================
-# CUSTOM CSS
-# =========================================================
 def inject_css() -> None:
     st.markdown(
         """
@@ -141,49 +134,38 @@ def inject_css() -> None:
             font-size: 0.8rem;
         }
 
-        .stock-card {
+        .card-wrap {
             background: linear-gradient(180deg, rgba(13,27,46,0.98), rgba(9,22,37,0.98));
             border: 1px solid rgba(255,255,255,0.08);
             border-radius: 24px;
-            padding: 1rem 1rem 0.9rem 1rem;
+            padding: 16px 16px 14px 16px;
             box-shadow: var(--shadow);
-            margin-bottom: 1rem;
+            margin-bottom: 14px;
         }
 
-        .row-between {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.75rem;
-        }
-
-        .row-wrap {
-            display: flex;
-            align-items: center;
-            gap: 0.45rem;
-            flex-wrap: wrap;
-        }
-
-        .ticker {
+        .card-title {
             color: white;
-            font-size: 1.35rem;
+            font-size: 28px;
             font-weight: 800;
-            letter-spacing: 0.5px;
+            line-height: 1;
+            margin: 0;
         }
 
-        .company {
+        .card-company {
             color: var(--muted);
-            font-size: 0.83rem;
-            margin-top: 0.18rem;
+            font-size: 13px;
+            margin-top: 4px;
+            margin-bottom: 6px;
         }
 
-        .badge {
+        .mini-badge {
             display: inline-block;
-            font-size: 0.72rem;
-            font-weight: 800;
-            padding: 0.32rem 0.62rem;
+            padding: 5px 10px;
             border-radius: 999px;
-            letter-spacing: 0.3px;
+            font-size: 11px;
+            font-weight: 800;
+            margin-right: 6px;
+            margin-top: 4px;
         }
 
         .badge-blue {
@@ -208,104 +190,6 @@ def inject_css() -> None:
             background: var(--yellow-soft);
             color: #ffd684;
             border: 1px solid rgba(246,195,91,0.24);
-        }
-
-        .score-box {
-            text-align: right;
-        }
-
-        .score-label {
-            color: var(--muted);
-            font-size: 0.72rem;
-            margin-bottom: 0.18rem;
-        }
-
-        .score-value {
-            font-size: 1.4rem;
-            font-weight: 800;
-            color: white;
-            line-height: 1.05;
-        }
-
-        .price-box {
-            text-align: right;
-            margin-top: 0.25rem;
-        }
-
-        .price {
-            color: #f3f8ff;
-            font-size: 1.1rem;
-            font-weight: 750;
-        }
-
-        .pct-pos {
-            color: #68ebb1;
-            font-weight: 700;
-            font-size: 0.86rem;
-        }
-
-        .pct-neg {
-            color: #ff8d9d;
-            font-weight: 700;
-            font-size: 0.86rem;
-        }
-
-        .tag {
-            display: inline-block;
-            padding: 0.28rem 0.58rem;
-            border-radius: 999px;
-            font-size: 0.7rem;
-            font-weight: 700;
-            color: #dceaff;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.08);
-            margin-right: 0.36rem;
-            margin-top: 0.18rem;
-        }
-
-        .progress-wrap {
-            margin-top: 0.8rem;
-            margin-bottom: 0.55rem;
-        }
-
-        .progress-track {
-            width: 100%;
-            height: 10px;
-            background: rgba(255,255,255,0.06);
-            border-radius: 999px;
-            overflow: hidden;
-        }
-
-        .progress-fill {
-            height: 10px;
-            border-radius: 999px;
-            background: linear-gradient(90deg, #1ec98e 0%, #4da3ff 100%);
-        }
-
-        .mini-grid {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 0.5rem;
-            margin-top: 0.8rem;
-        }
-
-        .mini-box {
-            background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(255,255,255,0.06);
-            border-radius: 16px;
-            padding: 0.65rem 0.7rem;
-        }
-
-        .mini-label {
-            color: var(--muted);
-            font-size: 0.7rem;
-            margin-bottom: 0.22rem;
-        }
-
-        .mini-value {
-            color: #eff5ff;
-            font-size: 0.9rem;
-            font-weight: 700;
         }
 
         .section-title {
@@ -365,9 +249,6 @@ def inject_css() -> None:
     )
 
 
-# =========================================================
-# STATIC DATA
-# =========================================================
 IDX_STOCKS = [
     ("BBCA", "Bank Central Asia Tbk"),
     ("BBRI", "Bank Rakyat Indonesia Tbk"),
@@ -417,26 +298,13 @@ IDX_STOCKS = [
     ("TOWR", "Sarana Menara Nusantara Tbk"),
 ]
 
-
 BROKERS = ["YP", "CC", "RX", "PD", "NI", "AK", "YU", "ZP", "BK", "DH"]
 
 
-# =========================================================
-# DATA LOADING
-# =========================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def load_data(period_label: str = "1 Hari", use_dummy: bool = True) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame]]:
-    """
-    Create dummy OHLCV data and pseudo flow/orderbook data.
-    This fallback keeps the app functional even without live APIs.
-    """
     if not use_dummy:
-        # Placeholder for future real integration
-        # Example:
-        # - IDX data provider
-        # - yfinance fallback
-        # - broker summary API
-        # - foreign flow API
+        # Placeholder integrasi data real
         pass
 
     seed_map = {"1 Hari": 11, "5 Hari": 22, "1 Bulan": 33}
@@ -448,7 +316,7 @@ def load_data(period_label: str = "1 Hari", use_dummy: bool = True) -> Tuple[pd.
     rows = []
     ohlcv_map: Dict[str, pd.DataFrame] = {}
 
-    for i, (ticker, company) in enumerate(IDX_STOCKS):
+    for ticker, company in IDX_STOCKS:
         base_price = rng.integers(50, 9500)
         drift = rng.uniform(-0.0008, 0.0028)
         vol = rng.uniform(0.012, 0.04)
@@ -473,7 +341,6 @@ def load_data(period_label: str = "1 Hari", use_dummy: bool = True) -> Tuple[pd.
             }
         ).reset_index(drop=True)
 
-        # Simulated external-like fields
         df["net_foreign"] = rng.normal(0, 8_000_000_000, num_days)
         df["broker_net"] = rng.normal(0, 9_000_000_000, num_days)
         df["bid_volume"] = rng.integers(500_000, 6_000_000, num_days)
@@ -511,9 +378,6 @@ def load_data(period_label: str = "1 Hari", use_dummy: bool = True) -> Tuple[pd.
     return master_df, ohlcv_map
 
 
-# =========================================================
-# INDICATOR HELPERS
-# =========================================================
 def ema(series: pd.Series, span: int) -> pd.Series:
     return series.ewm(span=span, adjust=False).mean()
 
@@ -529,7 +393,7 @@ def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
     return rsi.fillna(50)
 
 
-def compute_macd(close: pd.Series) -> Tuple[pd.Series, pd.Series, pd.Series]:
+def compute_macd(close: pd.Series):
     ema12 = ema(close, 12)
     ema26 = ema(close, 26)
     macd = ema12 - ema26
@@ -538,7 +402,7 @@ def compute_macd(close: pd.Series) -> Tuple[pd.Series, pd.Series, pd.Series]:
     return macd, signal, hist
 
 
-def compute_bollinger(close: pd.Series, period: int = 20, n_std: float = 2.0) -> Tuple[pd.Series, pd.Series, pd.Series]:
+def compute_bollinger(close: pd.Series, period: int = 20, n_std: float = 2.0):
     ma = close.rolling(period).mean()
     std = close.rolling(period).std(ddof=0)
     upper = ma + n_std * std
@@ -561,9 +425,6 @@ def detect_bullish_engulfing(prev_open: float, prev_close: float, open_: float, 
     return prev_bearish and curr_bullish and body_engulf
 
 
-# =========================================================
-# ANALYZERS
-# =========================================================
 def technical_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, float]:
     close = hist["close"]
     volume = hist["volume"]
@@ -584,10 +445,8 @@ def technical_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, fl
     last_bb_lower = float(bb_lower.iloc[-1]) if not pd.isna(bb_lower.iloc[-1]) else last_close
 
     vol_ratio = float(volume.iloc[-1] / max(volume.tail(20).mean(), 1))
-
     score = 0.0
 
-    # RSI
     if 50 <= rsi <= 65:
         score += 9
     elif 45 <= rsi < 50 or 65 < rsi <= 72:
@@ -597,7 +456,6 @@ def technical_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, fl
     else:
         score += 1
 
-    # MACD
     if macd_val > signal_val and hist_val > 0:
         score += 9
     elif macd_val > signal_val:
@@ -607,7 +465,6 @@ def technical_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, fl
     else:
         score += 2
 
-    # MA alignment
     if ma20 > ma50 > ma200:
         score += 9
     elif ma20 > ma50:
@@ -617,7 +474,6 @@ def technical_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, fl
     else:
         score += 1
 
-    # Bollinger + trend positioning
     if last_close > last_bb_upper:
         score += 4
     elif last_close > ma20:
@@ -627,7 +483,6 @@ def technical_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, fl
     else:
         score += 2
 
-    # Volume spike
     if vol_ratio >= 2.0:
         score += 8
     elif vol_ratio >= 1.5:
@@ -661,7 +516,6 @@ def flow_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, float]:
 
     score = 0.0
 
-    # Foreign trend
     foreign_positive_count = sum(v > 0 for v in [foreign_5d, foreign_10d, foreign_20d])
     if foreign_positive_count == 3:
         score += 12
@@ -672,7 +526,6 @@ def flow_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, float]:
     else:
         score += 1
 
-    # Broker accumulation
     broker_positive_count = sum(v > 0 for v in [broker_5d, broker_10d, broker_20d])
     if broker_positive_count == 3:
         score += 12
@@ -683,7 +536,6 @@ def flow_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, float]:
     else:
         score += 1
 
-    # Real accumulation logic
     price_up = stock_row["pct_change"] > 0
     vol_ratio = stock_row["volume_ratio"]
     if broker_5d > 0 and foreign_5d > 0 and price_up and vol_ratio > 1.2:
@@ -719,7 +571,6 @@ def orderbook_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, fl
 
     imbalance = bid_volume / max(offer_volume, 1)
     pressure = bid_volume - offer_volume
-
     score = 0.0
 
     if imbalance >= 1.5:
@@ -756,7 +607,6 @@ def orderbook_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, fl
 
 def pattern_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, float]:
     score = 0.0
-
     last = hist.iloc[-1]
     prev = hist.iloc[-2]
 
@@ -796,9 +646,6 @@ def pattern_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, floa
     }
 
 
-# =========================================================
-# SCORE + CLASSIFICATION
-# =========================================================
 def calculate_total_score(tech: Dict[str, float], flow: Dict[str, float], orderbook: Dict[str, float], pattern: Dict[str, float]) -> float:
     total = tech["technical_score"] + flow["flow_score"] + orderbook["orderbook_score"] + pattern["pattern_score"]
     return float(max(0, min(100, round(total, 2))))
@@ -824,10 +671,6 @@ def signal_badge_class(signal_name: str) -> str:
     return "badge-red"
 
 
-def score_to_strength_width(score: float) -> float:
-    return max(4.0, min(score, 100.0))
-
-
 def human_money(x: float) -> str:
     sign = "+" if x > 0 else ""
     abs_x = abs(x)
@@ -838,6 +681,10 @@ def human_money(x: float) -> str:
     if abs_x >= 1_000_000:
         return f"{sign}{x/1_000_000:.2f}M"
     return f"{sign}{x:,.0f}"
+
+
+def format_rupiah(x: float) -> str:
+    return f"Rp {x:,.0f}"
 
 
 def build_tags(row: pd.Series) -> List[str]:
@@ -859,16 +706,13 @@ def build_tags(row: pd.Series) -> List[str]:
     return tags[:5]
 
 
-def assign_top_brokers(seed_text: str) -> Tuple[str, str]:
+def assign_top_brokers(seed_text: str):
     base = sum(ord(c) for c in seed_text)
     buy = BROKERS[base % len(BROKERS)]
     sell = BROKERS[(base + 3) % len(BROKERS)]
     return buy, sell
 
 
-# =========================================================
-# RENDERING
-# =========================================================
 def render_header() -> None:
     st.markdown('<div class="app-title">Bandarmology Screener</div>', unsafe_allow_html=True)
     st.markdown(
@@ -937,55 +781,87 @@ def render_stock_cards(df: pd.DataFrame, limit: int = 12) -> None:
 
     for _, row in df.head(limit).iterrows():
         top_buy, top_sell = assign_top_brokers(row["ticker"])
+        badge_cls = signal_badge_class(row["signal"])
+        tags = row["tags"] if isinstance(row["tags"], list) else []
 
         with st.container():
-            c1, c2 = st.columns([3, 1])
+            st.markdown('<div class="card-wrap">', unsafe_allow_html=True)
+
+            c1, c2 = st.columns([3.4, 1.4], vertical_alignment="top")
 
             with c1:
-                st.markdown(f"## {row['ticker']}  •  {row['signal']}")
-                st.caption(row["company"])
+                st.markdown(
+                    f"""
+                    <div class="card-title">{row['ticker']}
+                        <span class="mini-badge {badge_cls}">{row['signal']}</span>
+                    </div>
+                    <div class="card-company">{row['company']}</div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-                tags = row["tags"] if isinstance(row["tags"], list) else []
-                if tags:
-                    st.write(" | ".join(tags))
+            with c2:
+                price_color = "#19d38a" if row["pct_change"] >= 0 else "#ff5d73"
+                st.markdown(
+                    f"""
+                    <div style="text-align:right;">
+                        <div style="font-size:12px; color:#9fb0c7;">Score</div>
+                        <div style="font-size:34px; font-weight:800; line-height:1; color:white;">{row['total_score']:.0f}</div>
+                        <div style="height:8px;"></div>
+                        <div style="font-size:12px; color:#9fb0c7;">Price</div>
+                        <div style="font-size:28px; font-weight:800; color:white;">{format_rupiah(row['last_price'])}</div>
+                        <div style="font-size:14px; font-weight:800; color:{price_color};">{row['pct_change']:+.2f}%</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-           with c2:
-    # SCORE
-    st.markdown(f"### {row['total_score']:.0f}")
-    st.caption("Score")
+            if tags:
+                tag_cols = st.columns(len(tags))
+                for i, tag in enumerate(tags):
+                    with tag_cols[i]:
+                        st.markdown(
+                            f"""
+                            <div style="
+                                display:inline-block;
+                                padding:6px 10px;
+                                border-radius:999px;
+                                font-size:11px;
+                                font-weight:700;
+                                color:#dceaff;
+                                background:rgba(255,255,255,0.05);
+                                border:1px solid rgba(255,255,255,0.08);
+                                margin-top:4px;
+                                margin-bottom:4px;
+                            ">{tag}</div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
 
-    # COLOR UNTUK PRICE
-    price_color = "#19d38a" if row["pct_change"] >= 0 else "#ff5d73"
-
-    # PRICE UI (STYLE CUSTOM)
-    st.markdown(
-        f"""
-        <div style="text-align:right; margin-top:8px;">
-            <div style="font-size:13px; color:#9fb0c7;">Price</div>
-            <div style="font-size:26px; font-weight:800; color:white;">
-                Rp {row['last_price']:,.0f}
-            </div>
-            <div style="font-size:14px; font-weight:700; color:{price_color};">
-                {row['pct_change']:+.2f}%
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-            st.progress(min(max(int(row["total_score"]), 0), 100))
+            progress_value = max(0.0, min(float(row["total_score"]) / 100.0, 1.0))
+            st.progress(progress_value)
 
             a, b, c = st.columns(3)
-            a.metric("Net Akumulasi", human_money(row["broker_5d"]))
-            b.metric("Top Buy / Sell", f"{top_buy} / {top_sell}")
-            c.metric("Vol Ratio", f"{row['volume_ratio']:.2f}x")
+            with a:
+                st.metric("Net Akumulasi", human_money(row["broker_5d"]))
+            with b:
+                st.metric("Top Buy / Sell", f"{top_buy} / {top_sell}")
+            with c:
+                st.metric("Vol Ratio", f"{row['volume_ratio']:.2f}x")
 
-            st.divider()
+            d, e, f = st.columns(3)
+            with d:
+                st.metric("RSI", f"{row['rsi']:.1f}")
+            with e:
+                st.metric("Flow Score", f"{row['flow_score']:.0f}")
+            with f:
+                st.metric("Bid/Offer", f"{row['bid_offer_imbalance']:.2f}")
+
+            st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_chart(hist: pd.DataFrame, ticker: str) -> None:
     chart_df = hist.tail(80).copy()
-
     ma20 = chart_df["close"].rolling(20).mean()
     ma50 = chart_df["close"].rolling(50).mean()
 
@@ -1039,7 +915,7 @@ def render_table(df: pd.DataFrame) -> None:
     ]
     table_df = df[show_cols].copy()
 
-    numeric_cols_2 = [
+    for col in [
         "total_score",
         "pct_change",
         "technical_score",
@@ -1049,25 +925,21 @@ def render_table(df: pd.DataFrame) -> None:
         "rsi",
         "volume_ratio",
         "bid_offer_imbalance",
-    ]
-    for col in numeric_cols_2:
+    ]:
         table_df[col] = pd.to_numeric(table_df[col], errors="coerce").round(2)
 
-    for money_col in ["foreign_5d", "broker_5d"]:
-        table_df[money_col] = table_df[money_col].apply(human_money)
+    table_df["last_price"] = table_df["last_price"].apply(format_rupiah)
+    table_df["foreign_5d"] = table_df["foreign_5d"].apply(human_money)
+    table_df["broker_5d"] = table_df["broker_5d"].apply(human_money)
 
     st.dataframe(table_df, use_container_width=True, hide_index=True)
 
 
-# =========================================================
-# MAIN APP LOGIC
-# =========================================================
 def prepare_scored_dataframe(base_df: pd.DataFrame, ohlcv_map: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     enriched_rows = []
 
     for _, row in base_df.iterrows():
         hist = ohlcv_map[row["ticker"]]
-
         tech = technical_analyzer(row, hist)
         flow = flow_analyzer(row, hist)
         orderbook = orderbook_analyzer(row, hist)
@@ -1083,7 +955,6 @@ def prepare_scored_dataframe(base_df: pd.DataFrame, ohlcv_map: Dict[str, pd.Data
         merged.update(pattern)
         merged["total_score"] = total_score
         merged["signal"] = signal
-
         enriched_rows.append(merged)
 
     df = pd.DataFrame(enriched_rows)
@@ -1098,16 +969,12 @@ def main() -> None:
     render_header()
 
     st.sidebar.markdown("## Filters")
-
     auto_refresh = st.sidebar.checkbox("Auto refresh every 60 seconds", value=False)
     use_dummy = st.sidebar.toggle("Use dummy fallback data", value=True)
 
-    # Tabs-like period selector
     tab1, tab2, tab3 = st.tabs(["1 Hari", "5 Hari", "1 Bulan"])
-    selected_period = "1 Hari"
     with tab1:
         st.caption("Mode cepat untuk snapshot harian.")
-        selected_period = "1 Hari"
     with tab2:
         st.caption("Lihat kecenderungan dalam 5 hari.")
     with tab3:
@@ -1115,22 +982,21 @@ def main() -> None:
 
     period_choice = st.sidebar.selectbox("Pilih periode", ["1 Hari", "5 Hari", "1 Bulan"], index=0)
 
-    # Data load
     base_df, ohlcv_map = load_data(period_label=period_choice, use_dummy=use_dummy)
     df = prepare_scored_dataframe(base_df, ohlcv_map)
 
-    # Sidebar filters
     min_price = st.sidebar.number_input("Minimum harga", min_value=0.0, value=0.0, step=50.0)
     max_price = st.sidebar.number_input("Maksimum harga", min_value=0.0, value=float(max(1000.0, df["last_price"].max())), step=50.0)
     min_volume = st.sidebar.number_input("Minimum volume", min_value=0.0, value=0.0, step=1000000.0)
     min_score = st.sidebar.slider("Minimum score", min_value=0, max_value=100, value=50)
+
     signal_filter = st.sidebar.multiselect(
         "Kategori sinyal",
         options=["Akumulasi Kuat", "Partisipasi", "Watchlist", "Distribusi"],
         default=["Akumulasi Kuat", "Partisipasi", "Watchlist"],
     )
-    watchlist_only = st.sidebar.checkbox("Watchlist only", value=False)
 
+    watchlist_only = st.sidebar.checkbox("Watchlist only", value=False)
     default_watchlist = ["BBCA", "BBRI", "BMRI", "TLKM", "ASII", "ANTM", "ADRO", "GOTO", "BRIS", "MDKA"]
     search_query = st.text_input("Cari emiten / nama perusahaan", placeholder="Contoh: BBCA, bank, antm, goto")
 
@@ -1155,7 +1021,6 @@ def main() -> None:
     render_summary_cards(filtered if not filtered.empty else df)
     render_toolbar_info(period_choice, len(filtered))
 
-    # Quick metrics
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         avg_score = filtered["total_score"].mean() if not filtered.empty else 0
@@ -1180,7 +1045,10 @@ def main() -> None:
 
     with right:
         st.markdown('<div class="section-title">Selected Stock Chart</div>', unsafe_allow_html=True)
-        selected_ticker = st.selectbox("Pilih saham untuk chart", options=filtered["ticker"].tolist() if not filtered.empty else df["ticker"].tolist())
+        selected_ticker = st.selectbox(
+            "Pilih saham untuk chart",
+            options=filtered["ticker"].tolist() if not filtered.empty else df["ticker"].tolist()
+        )
         render_chart(ohlcv_map[selected_ticker], selected_ticker)
 
         st.markdown(
@@ -1205,13 +1073,11 @@ def main() -> None:
         <div class="glass-box">
             <div class="section-title">Future API Integration Placeholders</div>
             <div class="footer-note">
-                You can replace dummy data inside <b>load_data()</b> with:
+                Ganti isi load_data() bila nanti mau pakai data real:
                 <br>• IDX OHLCV feed / broker summary source
                 <br>• foreign flow API
                 <br>• orderbook / depth API
-                <br>• yfinance or paid market data provider
-                <br><br>
-                Keep the analyzer functions unchanged, and only swap the incoming dataset schema as needed.
+                <br>• yfinance atau market data provider lain
             </div>
         </div>
         """,
