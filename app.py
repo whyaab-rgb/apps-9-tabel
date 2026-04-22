@@ -949,9 +949,29 @@ def render_stock_cards(df: pd.DataFrame, limit: int = 12) -> None:
                 if tags:
                     st.write(" | ".join(tags))
 
-            with c2:
-                st.metric("Score", f"{row['total_score']:.0f}", f"{row['pct_change']:+.2f}%")
-                st.write(f"Price: {row['last_price']:,.0f}")
+           with c2:
+    # SCORE
+    st.markdown(f"### {row['total_score']:.0f}")
+    st.caption("Score")
+
+    # COLOR UNTUK PRICE
+    price_color = "#19d38a" if row["pct_change"] >= 0 else "#ff5d73"
+
+    # PRICE UI (STYLE CUSTOM)
+    st.markdown(
+        f"""
+        <div style="text-align:right; margin-top:8px;">
+            <div style="font-size:13px; color:#9fb0c7;">Price</div>
+            <div style="font-size:26px; font-weight:800; color:white;">
+                Rp {row['last_price']:,.0f}
+            </div>
+            <div style="font-size:14px; font-weight:700; color:{price_color};">
+                {row['pct_change']:+.2f}%
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
             st.progress(min(max(int(row["total_score"]), 0), 100))
 
