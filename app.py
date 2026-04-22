@@ -1,428 +1,1238 @@
-from datetime import datetime
+# app.py
+import math
 import time
+from datetime import datetime
+from typing import Dict, List, Tuple
 
+import numpy as np
 import pandas as pd
-import requests
+import plotly.graph_objects as go
 import streamlit as st
 
-st.set_page_config(page_title="BSJP Grid 9 Live", layout="wide")
 
 # =========================================================
-# CONFIG
+# PAGE CONFIG
 # =========================================================
-SCREENER_API_URL = "http://127.0.0.1:8000/bsjp"
-API_HEADERS = {
-    "Content-Type": "application/json",
-}
-REQUEST_TIMEOUT = 8
-DEFAULT_REFRESH_SECONDS = 5
-
-# =========================================================
-# STYLE
-# =========================================================
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background: linear-gradient(180deg, #060c18 0%, #091226 100%);
-    }
-    .block-container {
-        max-width: 98%;
-        padding-top: 0.8rem;
-        padding-bottom: 1rem;
-    }
-    .section-title {
-        color: #eaf2ff;
-        font-size: 1.4rem;
-        font-weight: 800;
-        margin-bottom: 0.4rem;
-    }
-    .section-sub {
-        color: #8ea4c3;
-        font-size: 0.95rem;
-        margin-bottom: 1rem;
-    }
-    .card {
-        background: linear-gradient(180deg, #0a1222 0%, #09111f 100%);
-        border: 1px solid rgba(65, 99, 156, 0.35);
-        border-radius: 16px;
-        padding: 14px 14px 12px 14px;
-        min-height: 275px;
-        box-shadow: 0 8px 22px rgba(0,0,0,0.22);
-        margin-bottom: 14px;
-    }
-    .top-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        margin-bottom: 8px;
-    }
-    .symbol {
-        color: #ffffff;
-        font-size: 1.75rem;
-        font-weight: 900;
-        line-height: 1.1;
-    }
-    .price-row {
-        color: #ff6c7e;
-        font-size: 1.15rem;
-        font-weight: 700;
-        margin-top: 2px;
-    }
-    .status {
-        color: #e3eefc;
-        font-size: 0.95rem;
-        font-weight: 700;
-        margin-top: 6px;
-    }
-    .score-box {
-        text-align: right;
-    }
-    .score-label {
-        color: #5d6d8b;
-        font-size: 0.7rem;
-        font-weight: 700;
-        letter-spacing: 1px;
-    }
-    .score-value {
-        color: #1ce7ff;
-        font-size: 2.1rem;
-        font-weight: 900;
-        line-height: 1.1;
-    }
-    .bars {
-        display: flex;
-        gap: 4px;
-        margin: 14px 0 10px 0;
-    }
-    .bar-on {
-        width: 18%;
-        height: 18px;
-        border-radius: 3px;
-        background: #1cf087;
-    }
-    .bar-off {
-        width: 18%;
-        height: 18px;
-        border-radius: 3px;
-        background: #1d2a43;
-    }
-    .mini-line {
-        color: #93a8c5;
-        font-size: 0.84rem;
-        line-height: 1.55;
-        margin-top: 6px;
-    }
-    .mini-strong {
-        color: #dce9ff;
-        font-weight: 700;
-    }
-    .green { color: #1cf087; }
-    .red { color: #ff6c7e; }
-    .muted { color: #6f84a4; }
-    .rank-pill {
-        display: inline-block;
-        margin-top: 8px;
-        padding: 5px 10px;
-        border-radius: 999px;
-        background: rgba(52,200,255,0.12);
-        border: 1px solid rgba(52,200,255,0.28);
-        color: #8fe4ff;
-        font-size: 0.78rem;
-        font-weight: 800;
-    }
-    div[data-testid="stMetric"] {
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(120,160,210,0.18);
-        padding: 10px 14px;
-        border-radius: 14px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
+st.set_page_config(
+    page_title="Bandarmology Screener",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
+
 # =========================================================
-# HELPERS
+# CUSTOM CSS
 # =========================================================
-def safe_float(value, default=0.0):
-    try:
-        if value is None or value == "":
-            return float(default)
-        return float(value)
-    except Exception:
-        return float(default)
-
-
-def safe_str(value, default=""):
-    if value is None:
-        return default
-    return str(value)
-
-
-def calc_bsjp_score(row: pd.Series) -> tuple[float, str]:
-    score = 0.0
-    reasons = []
-
-    gain = safe_float(row.get("Gain 1 (%)"))
-    rvol = safe_float(row.get("RVOL (%)"))
-    rsi = safe_float(row.get("RSI 5M"))
-    now = safe_float(row.get("Now"))
-    entry = safe_float(row.get("Entry"))
-    tp = safe_float(row.get("TP"))
-    sl = safe_float(row.get("SL"))
-    signal = safe_str(row.get("Sinyal")).upper()
-    trend = safe_str(row.get("Trend")).upper()
-
-    if trend == "BULL":
-        score += 1.5
-        reasons.append("trend bull")
-    elif trend == "BEAR":
-        score -= 0.8
-
-    if signal in {"ON TRACK", "SUPER"}:
-        score += 2.5
-        reasons.append("signal kuat")
-    elif signal in {"AKUM", "REBOUND", "GC NOW", "HAKA"}:
-        score += 1.6
-        reasons.append("signal valid")
-    elif signal in {"DIST", "WAIT", "WASPADA OB"}:
-        score -= 1.4
-
-    if rvol >= 180:
-        score += 2.0
-        reasons.append("rvol tinggi")
-    elif rvol >= 120:
-        score += 1.4
-        reasons.append("volume aktif")
-    elif rvol >= 90:
-        score += 0.7
-
-    if 50 <= rsi <= 68:
-        score += 1.8
-        reasons.append("rsi sehat")
-    elif 45 <= rsi < 50:
-        score += 0.8
-    elif rsi >= 75:
-        score -= 1.2
-    elif rsi <= 35:
-        score -= 0.8
-
-    if entry > 0 and now <= entry * 1.02:
-        score += 1.3
-        reasons.append("dekat entry")
-
-    rr = 0.0
-    risk = now - sl
-    reward = tp - now
-    if risk > 0:
-        rr = round(reward / risk, 1)
-        if rr >= 2:
-            score += 1.2
-            reasons.append("rr bagus")
-        elif rr < 1:
-            score -= 0.6
-
-    if tp > 0 and now >= tp:
-        score = max(score, 0.5)
-    if sl > 0 and now <= sl:
-        score = min(score, 0.2)
-
-    status = "WAIT"
-    if score >= 7:
-        status = "MASUK"
-    elif score >= 5:
-        status = "PANTAU"
-    elif score >= 3:
-        status = "TUNGGU"
-    else:
-        status = "HINDARI"
-
-    return round(score, 1), status
-
-
-@st.cache_data(ttl=2, show_spinner=False)
-def fetch_live_data() -> pd.DataFrame:
-    res = requests.get(SCREENER_API_URL, headers=API_HEADERS, timeout=REQUEST_TIMEOUT)
-    res.raise_for_status()
-    payload = res.json()
-    rows = payload.get("data", []) if isinstance(payload, dict) else payload
-    if not rows:
-        return pd.DataFrame()
-
-    mapped = []
-    for item in rows:
-        now = safe_float(item.get("now") or item.get("price") or item.get("harga") or item.get("last"))
-        entry = safe_float(item.get("entry") or now)
-        tp = safe_float(item.get("tp") or round(now * 1.03))
-        sl = safe_float(item.get("sl") or round(now * 0.97))
-        row = {
-            "Emiten": safe_str(item.get("ticker") or item.get("symbol") or item.get("kode") or item.get("emiten")).upper(),
-            "Now": now,
-            "Gain 1 (%)": safe_float(item.get("gain1") or item.get("gain") or item.get("change_pct")),
-            "Wick (%)": safe_float(item.get("wick") or item.get("wick_pct")),
-            "Aksi": safe_str(item.get("action") or item.get("aksi") or "WATCH").upper(),
-            "Sinyal": safe_str(item.get("signal") or item.get("sinyal") or "WAIT").upper(),
-            "RVOL (%)": safe_float(item.get("rvol") or item.get("relative_volume") or item.get("rvol_pct")),
-            "Entry": entry,
-            "TP": tp,
-            "SL": sl,
-            "Profit (%)": safe_float(item.get("profit") or (((now - entry) / entry) * 100 if entry else 0)),
-            "% To TP": safe_float(item.get("to_tp") or (((tp - now) / now) * 100 if now else 0)),
-            "RSI Sig": safe_str(item.get("rsiSig") or item.get("rsi_signal") or "UP").upper(),
-            "RSI 5M": safe_float(item.get("rsi5m") or item.get("rsi_5m") or item.get("rsi")),
-            "Val": safe_float(item.get("value") or item.get("val") or item.get("turnover")),
-            "Fase": safe_str(item.get("phase") or item.get("fase") or "NETRAL").upper(),
-            "Trend": safe_str(item.get("trend") or item.get("direction") or "NEUTRAL").upper(),
-            "Updated": safe_str(item.get("updated_at") or item.get("time") or datetime.now().isoformat()),
+def inject_css() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+            --bg: #07111f;
+            --panel: #0d1b2e;
+            --panel-2: #10243b;
+            --border: rgba(255,255,255,0.08);
+            --text: #e8f0ff;
+            --muted: #9fb0c7;
+            --green: #19d38a;
+            --green-soft: rgba(25, 211, 138, 0.15);
+            --blue: #4da3ff;
+            --blue-soft: rgba(77, 163, 255, 0.16);
+            --red: #ff5d73;
+            --red-soft: rgba(255, 93, 115, 0.14);
+            --yellow: #f6c35b;
+            --yellow-soft: rgba(246, 195, 91, 0.14);
+            --shadow: 0 10px 30px rgba(0,0,0,0.30);
+            --radius: 18px;
         }
-        score, status = calc_bsjp_score(pd.Series(row))
-        row["Score"] = score
-        row["Status"] = status
-        risk = row["Now"] - row["SL"]
-        reward = row["TP"] - row["Now"]
-        row["RR"] = round(reward / risk, 1) if risk > 0 else 0.0
-        row["Stoch"] = max(1, min(99, int(row["RSI 5M"] * 1.2)))
-        row["M15"] = round((row["Score"] * 1.7) % 10, 1)
-        row["H1"] = round((row["Score"] * 2.3) % 10, 1)
-        row["D1"] = round((row["Score"] * 3.1) % 10, 1)
-        row["PP"] = round(row["Now"] * 0.99)
-        row["R1"] = round(row["Now"] * 1.03)
-        row["Bullish"] = row["Trend"] == "BULL"
-        row["VWAP Above"] = row["Now"] >= row["PP"]
-        row["MACD Expanding"] = row["RSI Sig"] == "UP"
-        mapped.append(row)
 
-    df = pd.DataFrame(mapped)
-    df = df[df["Emiten"] != ""].copy()
-    df = df.sort_values(["Score", "RVOL (%)", "Gain 1 (%)"], ascending=False).reset_index(drop=True)
-    df["BSJP Rank"] = range(1, len(df) + 1)
+        .stApp {
+            background:
+                radial-gradient(circle at top left, rgba(77,163,255,0.08), transparent 24%),
+                radial-gradient(circle at top right, rgba(25,211,138,0.06), transparent 26%),
+                linear-gradient(180deg, #06111d 0%, #081425 100%);
+            color: var(--text);
+        }
+
+        section[data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #07111f 0%, #0a1626 100%);
+            border-right: 1px solid var(--border);
+        }
+
+        .block-container {
+            padding-top: 1.2rem;
+            padding-bottom: 2rem;
+            max-width: 1500px;
+        }
+
+        .app-title {
+            font-size: 2.1rem;
+            font-weight: 800;
+            color: #f4f8ff;
+            margin-bottom: 0.2rem;
+            letter-spacing: 0.3px;
+        }
+
+        .app-subtitle {
+            color: var(--muted);
+            font-size: 0.95rem;
+            margin-bottom: 1.2rem;
+        }
+
+        .glass-box {
+            background: linear-gradient(180deg, rgba(16,36,59,0.94), rgba(10,24,40,0.96));
+            border: 1px solid var(--border);
+            border-radius: 22px;
+            box-shadow: var(--shadow);
+            padding: 1rem 1.1rem;
+            margin-bottom: 1rem;
+        }
+
+        .summary-card {
+            border-radius: 22px;
+            padding: 1rem 1rem 0.85rem 1rem;
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow);
+            min-height: 122px;
+        }
+
+        .summary-blue {
+            background: linear-gradient(180deg, rgba(77,163,255,0.18), rgba(16,29,47,0.95));
+        }
+
+        .summary-green {
+            background: linear-gradient(180deg, rgba(25,211,138,0.18), rgba(16,29,47,0.95));
+        }
+
+        .summary-red {
+            background: linear-gradient(180deg, rgba(255,93,115,0.18), rgba(16,29,47,0.95));
+        }
+
+        .summary-label {
+            color: #d9e6ff;
+            font-size: 0.95rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .summary-value {
+            font-size: 2.0rem;
+            font-weight: 800;
+            color: white;
+            line-height: 1;
+            margin-bottom: 0.45rem;
+        }
+
+        .summary-note {
+            color: var(--muted);
+            font-size: 0.8rem;
+        }
+
+        .toolbar-chip {
+            display: inline-block;
+            margin-right: 0.45rem;
+            margin-bottom: 0.35rem;
+            padding: 0.36rem 0.8rem;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: rgba(255,255,255,0.04);
+            color: #d8e6ff;
+            font-size: 0.8rem;
+        }
+
+        .stock-card {
+            background: linear-gradient(180deg, rgba(13,27,46,0.98), rgba(9,22,37,0.98));
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 24px;
+            padding: 1rem 1rem 0.9rem 1rem;
+            box-shadow: var(--shadow);
+            margin-bottom: 1rem;
+        }
+
+        .row-between {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+        }
+
+        .row-wrap {
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+            flex-wrap: wrap;
+        }
+
+        .ticker {
+            color: white;
+            font-size: 1.35rem;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+        }
+
+        .company {
+            color: var(--muted);
+            font-size: 0.83rem;
+            margin-top: 0.18rem;
+        }
+
+        .badge {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 800;
+            padding: 0.32rem 0.62rem;
+            border-radius: 999px;
+            letter-spacing: 0.3px;
+        }
+
+        .badge-blue {
+            background: var(--blue-soft);
+            color: #88c1ff;
+            border: 1px solid rgba(77,163,255,0.24);
+        }
+
+        .badge-green {
+            background: var(--green-soft);
+            color: #73efba;
+            border: 1px solid rgba(25,211,138,0.24);
+        }
+
+        .badge-red {
+            background: var(--red-soft);
+            color: #ff9baa;
+            border: 1px solid rgba(255,93,115,0.24);
+        }
+
+        .badge-yellow {
+            background: var(--yellow-soft);
+            color: #ffd684;
+            border: 1px solid rgba(246,195,91,0.24);
+        }
+
+        .score-box {
+            text-align: right;
+        }
+
+        .score-label {
+            color: var(--muted);
+            font-size: 0.72rem;
+            margin-bottom: 0.18rem;
+        }
+
+        .score-value {
+            font-size: 1.4rem;
+            font-weight: 800;
+            color: white;
+            line-height: 1.05;
+        }
+
+        .price-box {
+            text-align: right;
+            margin-top: 0.25rem;
+        }
+
+        .price {
+            color: #f3f8ff;
+            font-size: 1.1rem;
+            font-weight: 750;
+        }
+
+        .pct-pos {
+            color: #68ebb1;
+            font-weight: 700;
+            font-size: 0.86rem;
+        }
+
+        .pct-neg {
+            color: #ff8d9d;
+            font-weight: 700;
+            font-size: 0.86rem;
+        }
+
+        .tag {
+            display: inline-block;
+            padding: 0.28rem 0.58rem;
+            border-radius: 999px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: #dceaff;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.08);
+            margin-right: 0.36rem;
+            margin-top: 0.18rem;
+        }
+
+        .progress-wrap {
+            margin-top: 0.8rem;
+            margin-bottom: 0.55rem;
+        }
+
+        .progress-track {
+            width: 100%;
+            height: 10px;
+            background: rgba(255,255,255,0.06);
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 10px;
+            border-radius: 999px;
+            background: linear-gradient(90deg, #1ec98e 0%, #4da3ff 100%);
+        }
+
+        .mini-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.5rem;
+            margin-top: 0.8rem;
+        }
+
+        .mini-box {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 16px;
+            padding: 0.65rem 0.7rem;
+        }
+
+        .mini-label {
+            color: var(--muted);
+            font-size: 0.7rem;
+            margin-bottom: 0.22rem;
+        }
+
+        .mini-value {
+            color: #eff5ff;
+            font-size: 0.9rem;
+            font-weight: 700;
+        }
+
+        .section-title {
+            color: #edf4ff;
+            font-size: 1.05rem;
+            font-weight: 800;
+            margin: 0.2rem 0 0.8rem 0;
+        }
+
+        .footer-note {
+            color: var(--muted);
+            font-size: 0.78rem;
+            margin-top: 0.8rem;
+        }
+
+        div[data-testid="stMetric"] {
+            background: linear-gradient(180deg, rgba(13,27,46,0.97), rgba(10,24,40,0.96));
+            border: 1px solid rgba(255,255,255,0.07);
+            padding: 0.8rem;
+            border-radius: 18px;
+        }
+
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 10px;
+            background: transparent;
+        }
+
+        .stTabs [data-baseweb="tab"] {
+            height: 46px;
+            border-radius: 14px;
+            padding-left: 18px;
+            padding-right: 18px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.07);
+            color: #d6e4ff;
+        }
+
+        .stTabs [aria-selected="true"] {
+            background: linear-gradient(180deg, rgba(25,211,138,0.22), rgba(77,163,255,0.12));
+            border: 1px solid rgba(25,211,138,0.28);
+            color: white;
+        }
+
+        .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] > div {
+            background: rgba(255,255,255,0.03) !important;
+            color: #eaf2ff !important;
+            border-radius: 12px !important;
+        }
+
+        .stDataFrame, div[data-testid="stTable"] {
+            border-radius: 18px;
+            overflow: hidden;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# =========================================================
+# STATIC DATA
+# =========================================================
+IDX_STOCKS = [
+    ("BBCA", "Bank Central Asia Tbk"),
+    ("BBRI", "Bank Rakyat Indonesia Tbk"),
+    ("BMRI", "Bank Mandiri Tbk"),
+    ("BBNI", "Bank Negara Indonesia Tbk"),
+    ("TLKM", "Telkom Indonesia Tbk"),
+    ("ASII", "Astra International Tbk"),
+    ("UNTR", "United Tractors Tbk"),
+    ("ADRO", "Alamtri Resources Indonesia Tbk"),
+    ("ANTM", "Aneka Tambang Tbk"),
+    ("MDKA", "Merdeka Copper Gold Tbk"),
+    ("INCO", "Vale Indonesia Tbk"),
+    ("AMMN", "Amman Mineral Internasional Tbk"),
+    ("GOTO", "GoTo Gojek Tokopedia Tbk"),
+    ("BRIS", "Bank Syariah Indonesia Tbk"),
+    ("CPIN", "Charoen Pokphand Indonesia Tbk"),
+    ("ICBP", "Indofood CBP Sukses Makmur Tbk"),
+    ("INDF", "Indofood Sukses Makmur Tbk"),
+    ("JPFA", "Japfa Comfeed Indonesia Tbk"),
+    ("KLBF", "Kalbe Farma Tbk"),
+    ("MIKA", "Mitra Keluarga Karyasehat Tbk"),
+    ("SIDO", "Industri Jamu dan Farmasi Sido Muncul Tbk"),
+    ("HRUM", "Harum Energy Tbk"),
+    ("ITMG", "Indo Tambangraya Megah Tbk"),
+    ("PTBA", "Bukit Asam Tbk"),
+    ("MEDC", "Medco Energi Internasional Tbk"),
+    ("PGAS", "Perusahaan Gas Negara Tbk"),
+    ("AKRA", "AKR Corporindo Tbk"),
+    ("ERAA", "Erajaya Swasembada Tbk"),
+    ("EXCL", "XL Axiata Tbk"),
+    ("ISAT", "Indosat Tbk"),
+    ("SMGR", "Semen Indonesia Tbk"),
+    ("WIKA", "Wijaya Karya Tbk"),
+    ("ADHI", "Adhi Karya Tbk"),
+    ("PTPP", "PP Persero Tbk"),
+    ("SSMS", "Sawit Sumbermas Sarana Tbk"),
+    ("AALI", "Astra Agro Lestari Tbk"),
+    ("LSIP", "PP London Sumatra Indonesia Tbk"),
+    ("BBTN", "Bank Tabungan Negara Tbk"),
+    ("MAPI", "Mitra Adiperkasa Tbk"),
+    ("ACES", "Aspirasi Hidup Indonesia Tbk"),
+    ("AUTO", "Astra Otoparts Tbk"),
+    ("AVIA", "Avia Avian Tbk"),
+    ("BIRD", "Blue Bird Tbk"),
+    ("ESSA", "ESSA Industries Indonesia Tbk"),
+    ("HEAL", "Medikaloka Hermina Tbk"),
+    ("TOWR", "Sarana Menara Nusantara Tbk"),
+]
+
+
+BROKERS = ["YP", "CC", "RX", "PD", "NI", "AK", "YU", "ZP", "BK", "DH"]
+
+
+# =========================================================
+# DATA LOADING
+# =========================================================
+@st.cache_data(ttl=300, show_spinner=False)
+def load_data(period_label: str = "1 Hari", use_dummy: bool = True) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame]]:
+    """
+    Create dummy OHLCV data and pseudo flow/orderbook data.
+    This fallback keeps the app functional even without live APIs.
+    """
+    if not use_dummy:
+        # Placeholder for future real integration
+        # Example:
+        # - IDX data provider
+        # - yfinance fallback
+        # - broker summary API
+        # - foreign flow API
+        pass
+
+    seed_map = {"1 Hari": 11, "5 Hari": 22, "1 Bulan": 33}
+    rng = np.random.default_rng(seed_map.get(period_label, 11))
+
+    num_days = 240
+    dates = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=num_days)
+
+    rows = []
+    ohlcv_map: Dict[str, pd.DataFrame] = {}
+
+    for i, (ticker, company) in enumerate(IDX_STOCKS):
+        base_price = rng.integers(50, 9500)
+        drift = rng.uniform(-0.0008, 0.0028)
+        vol = rng.uniform(0.012, 0.04)
+
+        rets = rng.normal(drift, vol, num_days)
+        close = base_price * np.exp(np.cumsum(rets))
+        close = np.clip(close, 50, None)
+
+        open_ = close * (1 + rng.normal(0, 0.01, num_days))
+        high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0.01, 0.007, num_days)))
+        low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0.01, 0.007, num_days)))
+        volume = rng.integers(2_000_000, 150_000_000, num_days).astype(float)
+
+        df = pd.DataFrame(
+            {
+                "date": dates,
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+            }
+        ).reset_index(drop=True)
+
+        # Simulated external-like fields
+        df["net_foreign"] = rng.normal(0, 8_000_000_000, num_days)
+        df["broker_net"] = rng.normal(0, 9_000_000_000, num_days)
+        df["bid_volume"] = rng.integers(500_000, 6_000_000, num_days)
+        df["offer_volume"] = rng.integers(500_000, 6_000_000, num_days)
+        df["big_bid_wall"] = rng.integers(0, 2, num_days)
+        df["big_offer_wall"] = rng.integers(0, 2, num_days)
+
+        ohlcv_map[ticker] = df
+
+        rows.append(
+            {
+                "ticker": ticker,
+                "company": company,
+                "last_price": float(df["close"].iloc[-1]),
+                "prev_price": float(df["close"].iloc[-2]),
+                "last_volume": float(df["volume"].iloc[-1]),
+                "avg_volume_20": float(df["volume"].tail(20).mean()),
+                "foreign_5d": float(df["net_foreign"].tail(5).sum()),
+                "foreign_10d": float(df["net_foreign"].tail(10).sum()),
+                "foreign_20d": float(df["net_foreign"].tail(20).sum()),
+                "broker_5d": float(df["broker_net"].tail(5).sum()),
+                "broker_10d": float(df["broker_net"].tail(10).sum()),
+                "broker_20d": float(df["broker_net"].tail(20).sum()),
+                "bid_volume": float(df["bid_volume"].iloc[-1]),
+                "offer_volume": float(df["offer_volume"].iloc[-1]),
+                "big_bid_wall": int(df["big_bid_wall"].iloc[-1]),
+                "big_offer_wall": int(df["big_offer_wall"].iloc[-1]),
+            }
+        )
+
+    master_df = pd.DataFrame(rows)
+    master_df["pct_change"] = ((master_df["last_price"] / master_df["prev_price"]) - 1.0) * 100.0
+    master_df["volume_ratio"] = master_df["last_volume"] / master_df["avg_volume_20"].replace(0, np.nan)
+
+    return master_df, ohlcv_map
+
+
+# =========================================================
+# INDICATOR HELPERS
+# =========================================================
+def ema(series: pd.Series, span: int) -> pd.Series:
+    return series.ewm(span=span, adjust=False).mean()
+
+
+def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50)
+
+
+def compute_macd(close: pd.Series) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    ema12 = ema(close, 12)
+    ema26 = ema(close, 26)
+    macd = ema12 - ema26
+    signal = ema(macd, 9)
+    hist = macd - signal
+    return macd, signal, hist
+
+
+def compute_bollinger(close: pd.Series, period: int = 20, n_std: float = 2.0) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    ma = close.rolling(period).mean()
+    std = close.rolling(period).std(ddof=0)
+    upper = ma + n_std * std
+    lower = ma - n_std * std
+    return ma, upper, lower
+
+
+def detect_hammer(open_: float, high: float, low: float, close: float) -> bool:
+    body = abs(close - open_)
+    candle_range = max(high - low, 1e-9)
+    lower_shadow = min(open_, close) - low
+    upper_shadow = high - max(open_, close)
+    return (lower_shadow > body * 2.0) and (upper_shadow < body * 1.2) and (body / candle_range < 0.4)
+
+
+def detect_bullish_engulfing(prev_open: float, prev_close: float, open_: float, close: float) -> bool:
+    prev_bearish = prev_close < prev_open
+    curr_bullish = close > open_
+    body_engulf = (close >= prev_open) and (open_ <= prev_close)
+    return prev_bearish and curr_bullish and body_engulf
+
+
+# =========================================================
+# ANALYZERS
+# =========================================================
+def technical_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, float]:
+    close = hist["close"]
+    volume = hist["volume"]
+
+    rsi = float(compute_rsi(close).iloc[-1])
+    macd, signal, hist_macd = compute_macd(close)
+    macd_val = float(macd.iloc[-1])
+    signal_val = float(signal.iloc[-1])
+    hist_val = float(hist_macd.iloc[-1])
+
+    ma20 = float(close.rolling(20).mean().iloc[-1])
+    ma50 = float(close.rolling(50).mean().iloc[-1])
+    ma200 = float(close.rolling(200).mean().iloc[-1])
+
+    _, bb_upper, bb_lower = compute_bollinger(close)
+    last_close = float(close.iloc[-1])
+    last_bb_upper = float(bb_upper.iloc[-1]) if not pd.isna(bb_upper.iloc[-1]) else last_close
+    last_bb_lower = float(bb_lower.iloc[-1]) if not pd.isna(bb_lower.iloc[-1]) else last_close
+
+    vol_ratio = float(volume.iloc[-1] / max(volume.tail(20).mean(), 1))
+
+    score = 0.0
+
+    # RSI
+    if 50 <= rsi <= 65:
+        score += 9
+    elif 45 <= rsi < 50 or 65 < rsi <= 72:
+        score += 6
+    elif 35 <= rsi < 45:
+        score += 3
+    else:
+        score += 1
+
+    # MACD
+    if macd_val > signal_val and hist_val > 0:
+        score += 9
+    elif macd_val > signal_val:
+        score += 7
+    elif hist_val > 0:
+        score += 5
+    else:
+        score += 2
+
+    # MA alignment
+    if ma20 > ma50 > ma200:
+        score += 9
+    elif ma20 > ma50:
+        score += 7
+    elif last_close > ma20:
+        score += 4
+    else:
+        score += 1
+
+    # Bollinger + trend positioning
+    if last_close > last_bb_upper:
+        score += 4
+    elif last_close > ma20:
+        score += 6
+    elif last_close >= last_bb_lower:
+        score += 4
+    else:
+        score += 2
+
+    # Volume spike
+    if vol_ratio >= 2.0:
+        score += 8
+    elif vol_ratio >= 1.5:
+        score += 6
+    elif vol_ratio >= 1.2:
+        score += 4
+    else:
+        score += 2
+
+    return {
+        "technical_score": min(score, 35.0),
+        "rsi": rsi,
+        "macd": macd_val,
+        "macd_signal": signal_val,
+        "ma20": ma20,
+        "ma50": ma50,
+        "ma200": ma200,
+        "bb_upper": last_bb_upper,
+        "bb_lower": last_bb_lower,
+        "volume_ratio": vol_ratio,
+    }
+
+
+def flow_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, float]:
+    foreign_5d = float(stock_row["foreign_5d"])
+    foreign_10d = float(stock_row["foreign_10d"])
+    foreign_20d = float(stock_row["foreign_20d"])
+    broker_5d = float(stock_row["broker_5d"])
+    broker_10d = float(stock_row["broker_10d"])
+    broker_20d = float(stock_row["broker_20d"])
+
+    score = 0.0
+
+    # Foreign trend
+    foreign_positive_count = sum(v > 0 for v in [foreign_5d, foreign_10d, foreign_20d])
+    if foreign_positive_count == 3:
+        score += 12
+    elif foreign_positive_count == 2:
+        score += 8
+    elif foreign_positive_count == 1:
+        score += 4
+    else:
+        score += 1
+
+    # Broker accumulation
+    broker_positive_count = sum(v > 0 for v in [broker_5d, broker_10d, broker_20d])
+    if broker_positive_count == 3:
+        score += 12
+    elif broker_positive_count == 2:
+        score += 8
+    elif broker_positive_count == 1:
+        score += 4
+    else:
+        score += 1
+
+    # Real accumulation logic
+    price_up = stock_row["pct_change"] > 0
+    vol_ratio = stock_row["volume_ratio"]
+    if broker_5d > 0 and foreign_5d > 0 and price_up and vol_ratio > 1.2:
+        score += 11
+        accumulation_state = "Strong Accumulation"
+    elif broker_5d > 0 and price_up:
+        score += 8
+        accumulation_state = "Broker Supported"
+    elif foreign_5d > 0:
+        score += 6
+        accumulation_state = "Foreign Supported"
+    else:
+        score += 2
+        accumulation_state = "Weak / Mixed"
+
+    return {
+        "flow_score": min(score, 35.0),
+        "foreign_5d": foreign_5d,
+        "foreign_10d": foreign_10d,
+        "foreign_20d": foreign_20d,
+        "broker_5d": broker_5d,
+        "broker_10d": broker_10d,
+        "broker_20d": broker_20d,
+        "accumulation_state": accumulation_state,
+    }
+
+
+def orderbook_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, float]:
+    bid_volume = float(stock_row["bid_volume"])
+    offer_volume = float(stock_row["offer_volume"])
+    big_bid_wall = int(stock_row["big_bid_wall"])
+    big_offer_wall = int(stock_row["big_offer_wall"])
+
+    imbalance = bid_volume / max(offer_volume, 1)
+    pressure = bid_volume - offer_volume
+
+    score = 0.0
+
+    if imbalance >= 1.5:
+        score += 7
+    elif imbalance >= 1.15:
+        score += 5
+    elif imbalance >= 1.0:
+        score += 3
+    else:
+        score += 1
+
+    if big_bid_wall and not big_offer_wall:
+        score += 5
+    elif big_bid_wall and big_offer_wall:
+        score += 3
+    elif big_offer_wall:
+        score += 1
+    else:
+        score += 2
+
+    if pressure > 0:
+        score += 3
+    else:
+        score += 1
+
+    return {
+        "orderbook_score": min(score, 15.0),
+        "bid_offer_imbalance": imbalance,
+        "big_bid_wall": big_bid_wall,
+        "big_offer_wall": big_offer_wall,
+        "order_pressure": pressure,
+    }
+
+
+def pattern_analyzer(stock_row: pd.Series, hist: pd.DataFrame) -> Dict[str, float]:
+    score = 0.0
+
+    last = hist.iloc[-1]
+    prev = hist.iloc[-2]
+
+    hammer = detect_hammer(last["open"], last["high"], last["low"], last["close"])
+    engulfing = detect_bullish_engulfing(prev["open"], prev["close"], last["open"], last["close"])
+
+    resistance_20 = float(hist["high"].tail(20).max())
+    support_20 = float(hist["low"].tail(20).min())
+    breakout = float(last["close"]) >= (resistance_20 * 0.995)
+    bounce_support = float(last["close"]) > support_20 * 1.03
+
+    vol_ratio = float(hist["volume"].iloc[-1] / max(hist["volume"].tail(20).mean(), 1))
+
+    if hammer:
+        score += 4
+    if engulfing:
+        score += 4
+    if breakout:
+        score += 4
+    elif bounce_support:
+        score += 2
+
+    if vol_ratio >= 1.5:
+        score += 3
+    elif vol_ratio >= 1.2:
+        score += 2
+    else:
+        score += 1
+
+    return {
+        "pattern_score": min(score, 15.0),
+        "hammer": hammer,
+        "bullish_engulfing": engulfing,
+        "breakout": breakout,
+        "support_20": support_20,
+        "resistance_20": resistance_20,
+    }
+
+
+# =========================================================
+# SCORE + CLASSIFICATION
+# =========================================================
+def calculate_total_score(tech: Dict[str, float], flow: Dict[str, float], orderbook: Dict[str, float], pattern: Dict[str, float]) -> float:
+    total = tech["technical_score"] + flow["flow_score"] + orderbook["orderbook_score"] + pattern["pattern_score"]
+    return float(max(0, min(100, round(total, 2))))
+
+
+def classify_signal(score: float) -> str:
+    if score >= 80:
+        return "Akumulasi Kuat"
+    if score >= 65:
+        return "Partisipasi"
+    if score >= 50:
+        return "Watchlist"
+    return "Distribusi"
+
+
+def signal_badge_class(signal_name: str) -> str:
+    if signal_name == "Akumulasi Kuat":
+        return "badge-blue"
+    if signal_name == "Partisipasi":
+        return "badge-green"
+    if signal_name == "Watchlist":
+        return "badge-yellow"
+    return "badge-red"
+
+
+def score_to_strength_width(score: float) -> float:
+    return max(4.0, min(score, 100.0))
+
+
+def human_money(x: float) -> str:
+    sign = "+" if x > 0 else ""
+    abs_x = abs(x)
+    if abs_x >= 1_000_000_000_000:
+        return f"{sign}{x/1_000_000_000_000:.2f}T"
+    if abs_x >= 1_000_000_000:
+        return f"{sign}{x/1_000_000_000:.2f}B"
+    if abs_x >= 1_000_000:
+        return f"{sign}{x/1_000_000:.2f}M"
+    return f"{sign}{x:,.0f}"
+
+
+def build_tags(row: pd.Series) -> List[str]:
+    tags = []
+    if row["volume_ratio"] >= 1.5:
+        tags.append("Unusual Vol")
+    if row["last_price"] > row["ma20"] and row["ma20"] > row["ma50"]:
+        tags.append("Crossing")
+    if row["last_price"] <= 500:
+        tags.append("Penny")
+    if row["avg_volume_20"] >= 8_000_000:
+        tags.append("Liquid")
+    if row["hammer"]:
+        tags.append("Hammer")
+    if row["bullish_engulfing"]:
+        tags.append("Engulfing")
+    if row["breakout"]:
+        tags.append("Breakout")
+    return tags[:5]
+
+
+def assign_top_brokers(seed_text: str) -> Tuple[str, str]:
+    base = sum(ord(c) for c in seed_text)
+    buy = BROKERS[base % len(BROKERS)]
+    sell = BROKERS[(base + 3) % len(BROKERS)]
+    return buy, sell
+
+
+# =========================================================
+# RENDERING
+# =========================================================
+def render_header() -> None:
+    st.markdown('<div class="app-title">Bandarmology Screener</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="app-subtitle">Stock screener dark-theme premium style • Last update: {datetime.now().strftime("%d %b %Y %H:%M:%S")}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_summary_cards(df: pd.DataFrame) -> None:
+    akumulasi = int((df["signal"] == "Akumulasi Kuat").sum())
+    partisipasi = int((df["signal"] == "Partisipasi").sum())
+    distribusi = int((df["signal"] == "Distribusi").sum())
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown(
+            f"""
+            <div class="summary-card summary-blue">
+                <div class="summary-label">Akumulasi</div>
+                <div class="summary-value">{akumulasi}</div>
+                <div class="summary-note">Skor 80–100 • Bandar accumulation bias</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            f"""
+            <div class="summary-card summary-green">
+                <div class="summary-label">Partisipasi</div>
+                <div class="summary-value">{partisipasi}</div>
+                <div class="summary-note">Skor 65–79 • Flow mulai aktif</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c3:
+        st.markdown(
+            f"""
+            <div class="summary-card summary-red">
+                <div class="summary-label">Distribusi</div>
+                <div class="summary-value">{distribusi}</div>
+                <div class="summary-note">Skor &lt; 50 • Hindari saat ini</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_toolbar_info(period_label: str, filtered_count: int) -> None:
+    st.markdown(
+        f"""
+        <div class="glass-box">
+            <span class="toolbar-chip">Periode: {period_label}</span>
+            <span class="toolbar-chip">Jumlah Emiten: {filtered_count}</span>
+            <span class="toolbar-chip">Mode: Dummy Fallback Active</span>
+            <span class="toolbar-chip">Scoring: Tech 35 • Flow 35 • Orderbook 15 • Pattern 15</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_stock_cards(df: pd.DataFrame, limit: int = 12) -> None:
+    st.markdown('<div class="section-title">Top Ranked Signals</div>', unsafe_allow_html=True)
+
+    for _, row in df.head(limit).iterrows():
+        badge_cls = signal_badge_class(row["signal"])
+        pct_cls = "pct-pos" if row["pct_change"] >= 0 else "pct-neg"
+        strength_width = score_to_strength_width(row["total_score"])
+        top_buy, top_sell = assign_top_brokers(row["ticker"])
+
+        tag_html = "".join([f'<span class="tag">{tag}</span>' for tag in row["tags"]])
+
+        html = f"""
+        <div class="stock-card">
+            <div class="row-between">
+                <div>
+                    <div class="row-wrap">
+                        <div class="ticker">{row["ticker"]}</div>
+                        <span class="badge {badge_cls}">{row["signal"]}</span>
+                    </div>
+                    <div class="company">{row["company"]}</div>
+                </div>
+                <div>
+                    <div class="score-box">
+                        <div class="score-label">Score</div>
+                        <div class="score-value">{row["total_score"]:.0f}</div>
+                    </div>
+                    <div class="price-box">
+                        <div class="price">{row["last_price"]:,.0f}</div>
+                        <div class="{pct_cls}">{row["pct_change"]:+.2f}%</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row-wrap" style="margin-top:0.65rem;">
+                {tag_html}
+            </div>
+
+            <div class="progress-wrap">
+                <div class="progress-track">
+                    <div class="progress-fill" style="width:{strength_width}%;"></div>
+                </div>
+            </div>
+
+            <div class="mini-grid">
+                <div class="mini-box">
+                    <div class="mini-label">Net Akumulasi</div>
+                    <div class="mini-value">{human_money(row["broker_5d"])}</div>
+                </div>
+                <div class="mini-box">
+                    <div class="mini-label">Top Buy / Sell</div>
+                    <div class="mini-value">{top_buy} / {top_sell}</div>
+                </div>
+                <div class="mini-box">
+                    <div class="mini-label">Vol Ratio</div>
+                    <div class="mini-value">{row["volume_ratio"]:.2f}x</div>
+                </div>
+            </div>
+        </div>
+        """
+        st.markdown(html, unsafe_allow_html=True)
+
+
+def render_chart(hist: pd.DataFrame, ticker: str) -> None:
+    chart_df = hist.tail(80).copy()
+
+    ma20 = chart_df["close"].rolling(20).mean()
+    ma50 = chart_df["close"].rolling(50).mean()
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Candlestick(
+            x=chart_df["date"],
+            open=chart_df["open"],
+            high=chart_df["high"],
+            low=chart_df["low"],
+            close=chart_df["close"],
+            name="OHLC",
+        )
+    )
+    fig.add_trace(go.Scatter(x=chart_df["date"], y=ma20, mode="lines", name="MA20"))
+    fig.add_trace(go.Scatter(x=chart_df["date"], y=ma50, mode="lines", name="MA50"))
+
+    fig.update_layout(
+        title=f"{ticker} Price Structure",
+        height=440,
+        template="plotly_dark",
+        margin=dict(l=10, r=10, t=40, b=10),
+        xaxis_rangeslider_visible=False,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", y=1.02, x=0),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_table(df: pd.DataFrame) -> None:
+    st.markdown('<div class="section-title">Screening Table</div>', unsafe_allow_html=True)
+
+    show_cols = [
+        "rank",
+        "ticker",
+        "company",
+        "signal",
+        "total_score",
+        "last_price",
+        "pct_change",
+        "technical_score",
+        "flow_score",
+        "orderbook_score",
+        "pattern_score",
+        "rsi",
+        "volume_ratio",
+        "bid_offer_imbalance",
+        "foreign_5d",
+        "broker_5d",
+    ]
+    table_df = df[show_cols].copy()
+
+    numeric_cols_2 = [
+        "total_score",
+        "pct_change",
+        "technical_score",
+        "flow_score",
+        "orderbook_score",
+        "pattern_score",
+        "rsi",
+        "volume_ratio",
+        "bid_offer_imbalance",
+    ]
+    for col in numeric_cols_2:
+        table_df[col] = pd.to_numeric(table_df[col], errors="coerce").round(2)
+
+    for money_col in ["foreign_5d", "broker_5d"]:
+        table_df[money_col] = table_df[money_col].apply(human_money)
+
+    st.dataframe(table_df, use_container_width=True, hide_index=True)
+
+
+# =========================================================
+# MAIN APP LOGIC
+# =========================================================
+def prepare_scored_dataframe(base_df: pd.DataFrame, ohlcv_map: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    enriched_rows = []
+
+    for _, row in base_df.iterrows():
+        hist = ohlcv_map[row["ticker"]]
+
+        tech = technical_analyzer(row, hist)
+        flow = flow_analyzer(row, hist)
+        orderbook = orderbook_analyzer(row, hist)
+        pattern = pattern_analyzer(row, hist)
+
+        total_score = calculate_total_score(tech, flow, orderbook, pattern)
+        signal = classify_signal(total_score)
+
+        merged = row.to_dict()
+        merged.update(tech)
+        merged.update(flow)
+        merged.update(orderbook)
+        merged.update(pattern)
+        merged["total_score"] = total_score
+        merged["signal"] = signal
+
+        enriched_rows.append(merged)
+
+    df = pd.DataFrame(enriched_rows)
+    df["tags"] = df.apply(build_tags, axis=1)
+    df = df.sort_values(["total_score", "pct_change", "volume_ratio"], ascending=[False, False, False]).reset_index(drop=True)
+    df["rank"] = np.arange(1, len(df) + 1)
     return df
 
 
-def render_card(row: pd.Series) -> str:
-    score = float(row['Score'])
-    bars_on = max(1, min(5, int(round(score / 2))))
-    bars_html = "".join(["<div class='bar-on'></div>" if idx < bars_on else "<div class='bar-off'></div>" for idx in range(5)])
+def main() -> None:
+    inject_css()
+    render_header()
 
-    signal_icons = []
-    signal_icons.append("📍 PP ok" if row["Bullish"] else "📍 PP lemah")
-    signal_icons.append("🟢 MFI aktif" if row["VWAP Above"] else "🔴 MFI lemah")
-    signal_icons.append("✔" if row["MACD Expanding"] else "✖")
-    signal_text = " &nbsp;&nbsp; ".join(signal_icons)
+    st.sidebar.markdown("## Filters")
 
-    return f"""
-    <div class='card'>
-      <div class='top-row'>
-        <div>
-          <div class='symbol'>{row['Emiten']}</div>
-          <div class='price-row'>{int(row['Now'])} 📈</div>
-          <div class='status'>{row['Status']}</div>
-          <div class='rank-pill'>No. BSJP #{int(row['BSJP Rank'])}</div>
+    auto_refresh = st.sidebar.checkbox("Auto refresh every 60 seconds", value=False)
+    use_dummy = st.sidebar.toggle("Use dummy fallback data", value=True)
+
+    # Tabs-like period selector
+    tab1, tab2, tab3 = st.tabs(["1 Hari", "5 Hari", "1 Bulan"])
+    selected_period = "1 Hari"
+    with tab1:
+        st.caption("Mode cepat untuk snapshot harian.")
+        selected_period = "1 Hari"
+    with tab2:
+        st.caption("Lihat kecenderungan dalam 5 hari.")
+    with tab3:
+        st.caption("Lihat bias 1 bulan.")
+
+    period_choice = st.sidebar.selectbox("Pilih periode", ["1 Hari", "5 Hari", "1 Bulan"], index=0)
+
+    # Data load
+    base_df, ohlcv_map = load_data(period_label=period_choice, use_dummy=use_dummy)
+    df = prepare_scored_dataframe(base_df, ohlcv_map)
+
+    # Sidebar filters
+    min_price = st.sidebar.number_input("Minimum harga", min_value=0.0, value=0.0, step=50.0)
+    max_price = st.sidebar.number_input("Maksimum harga", min_value=0.0, value=float(max(1000.0, df["last_price"].max())), step=50.0)
+    min_volume = st.sidebar.number_input("Minimum volume", min_value=0.0, value=0.0, step=1000000.0)
+    min_score = st.sidebar.slider("Minimum score", min_value=0, max_value=100, value=50)
+    signal_filter = st.sidebar.multiselect(
+        "Kategori sinyal",
+        options=["Akumulasi Kuat", "Partisipasi", "Watchlist", "Distribusi"],
+        default=["Akumulasi Kuat", "Partisipasi", "Watchlist"],
+    )
+    watchlist_only = st.sidebar.checkbox("Watchlist only", value=False)
+
+    default_watchlist = ["BBCA", "BBRI", "BMRI", "TLKM", "ASII", "ANTM", "ADRO", "GOTO", "BRIS", "MDKA"]
+    search_query = st.text_input("Cari emiten / nama perusahaan", placeholder="Contoh: BBCA, bank, antm, goto")
+
+    if watchlist_only:
+        df = df[df["ticker"].isin(default_watchlist)].copy()
+
+    filtered = df[
+        (df["last_price"] >= min_price)
+        & (df["last_price"] <= max_price)
+        & (df["last_volume"] >= min_volume)
+        & (df["total_score"] >= min_score)
+        & (df["signal"].isin(signal_filter))
+    ].copy()
+
+    if search_query.strip():
+        q = search_query.strip().lower()
+        filtered = filtered[
+            filtered["ticker"].str.lower().str.contains(q)
+            | filtered["company"].str.lower().str.contains(q)
+        ].copy()
+
+    render_summary_cards(filtered if not filtered.empty else df)
+    render_toolbar_info(period_choice, len(filtered))
+
+    # Quick metrics
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        avg_score = filtered["total_score"].mean() if not filtered.empty else 0
+        st.metric("Avg Score", f"{avg_score:.1f}")
+    with c2:
+        top_pct = filtered["pct_change"].max() if not filtered.empty else 0
+        st.metric("Top % Change", f"{top_pct:+.2f}%")
+    with c3:
+        avg_vol_ratio = filtered["volume_ratio"].mean() if not filtered.empty else 0
+        st.metric("Avg Vol Ratio", f"{avg_vol_ratio:.2f}x")
+    with c4:
+        strongest_flow = filtered["flow_score"].max() if not filtered.empty else 0
+        st.metric("Top Flow Score", f"{strongest_flow:.0f}")
+
+    left, right = st.columns([1.2, 1.0])
+
+    with left:
+        if filtered.empty:
+            st.warning("Tidak ada saham yang cocok dengan filter saat ini.")
+        else:
+            render_stock_cards(filtered, limit=12)
+
+    with right:
+        st.markdown('<div class="section-title">Selected Stock Chart</div>', unsafe_allow_html=True)
+        selected_ticker = st.selectbox("Pilih saham untuk chart", options=filtered["ticker"].tolist() if not filtered.empty else df["ticker"].tolist())
+        render_chart(ohlcv_map[selected_ticker], selected_ticker)
+
+        st.markdown(
+            """
+            <div class="glass-box">
+                <div class="section-title">Analyzer Engine Notes</div>
+                <div class="footer-note">
+                    technical_analyzer: RSI, MACD, MA cross 20/50/200, Bollinger Band, volume spike.<br><br>
+                    flow_analyzer: net foreign buy 5D/10D/20D, broker accumulation, akumulasi detection.<br><br>
+                    orderbook_analyzer: bid/offer imbalance, big wall, order pressure.<br><br>
+                    pattern_analyzer: hammer, bullish engulfing, support/resistance breakout, volume confirmation.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    render_table(filtered if not filtered.empty else df)
+
+    st.markdown(
+        """
+        <div class="glass-box">
+            <div class="section-title">Future API Integration Placeholders</div>
+            <div class="footer-note">
+                You can replace dummy data inside <b>load_data()</b> with:
+                <br>• IDX OHLCV feed / broker summary source
+                <br>• foreign flow API
+                <br>• orderbook / depth API
+                <br>• yfinance or paid market data provider
+                <br><br>
+                Keep the analyzer functions unchanged, and only swap the incoming dataset schema as needed.
+            </div>
         </div>
-        <div class='score-box'>
-          <div class='score-label'>SCORE</div>
-          <div class='score-value'>{score:.1f}</div>
-        </div>
-      </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-      <div class='bars'>{bars_html}</div>
-
-      <div class='mini-line'>
-        <span class='muted'>RSI-EMA</span> <span class='mini-strong'>{row['RSI 5M']:.1f}</span>
-        &nbsp;&nbsp; <span class='muted'>STOCH</span> <span class='mini-strong'>{int(row['Stoch'])}</span>
-        &nbsp;&nbsp; <span class='muted'>RVOL</span> <span class='mini-strong'>{row['RVOL (%)']:.2f}x</span>
-      </div>
-
-      <div class='mini-line'>
-        <span class='muted'>TP</span> <span class='green mini-strong'>{int(row['TP'])}</span>
-        &nbsp;&nbsp; <span class='muted'>SL</span> <span class='red mini-strong'>{int(row['SL'])}</span>
-        &nbsp;&nbsp; <span class='muted'>R:R</span> <span class='mini-strong'>{row['RR']}</span>
-      </div>
-
-      <div class='mini-line'>
-        {row['Sinyal']} · {row['Trend']} · {row['Fase']}
-      </div>
-
-      <div class='mini-line'>
-        {signal_text}
-      </div>
-
-      <div class='mini-line'>
-        <span class='muted'>M15:</span> <span class='mini-strong'>{row['M15']}</span>
-        &nbsp;&nbsp; <span class='muted'>H1:</span> <span class='mini-strong'>{row['H1']}</span>
-        &nbsp;&nbsp; <span class='muted'>D1:</span> <span class='mini-strong'>{row['D1']}</span>
-        &nbsp;&nbsp; <span class='muted'>PP:</span> <span class='mini-strong'>{int(row['PP'])}</span>
-        &nbsp;&nbsp; <span class='muted'>R1:</span> <span class='mini-strong'>{int(row['R1'])}</span>
-      </div>
-    </div>
-    """
-
-# =========================================================
-# APP
-# =========================================================
-st.markdown("<div class='section-title'>BSJP Screener Grid 9 Live</div>", unsafe_allow_html=True)
-st.markdown(
-    "<div class='section-sub'>Ranking BSJP otomatis dari data live backend, tampil 9 kartu per halaman, dan nomor urut BSJP berubah mengikuti data terbaru.</div>",
-    unsafe_allow_html=True,
-)
-
-with st.sidebar:
-    st.header("Filter")
-    search = st.text_input("Search Emiten", placeholder="Contoh: BBRI, BMRI, GZCO")
-    sort_by = st.selectbox("Urutkan", ["BSJP Rank", "Score", "RVOL (%)", "Gain 1 (%)", "RSI 5M"], index=0)
-    page_size = st.selectbox("Jumlah kartu per halaman", [9, 18, 27], index=0)
-    auto_refresh = st.checkbox("Auto Refresh", value=True)
-    refresh_seconds = st.slider("Refresh (detik)", 2, 60, DEFAULT_REFRESH_SECONDS)
-    if st.button("Refresh Sekarang", use_container_width=True):
-        fetch_live_data.clear()
+    if auto_refresh:
+        time.sleep(60)
         st.rerun()
 
-try:
-    df = fetch_live_data()
-except Exception as err:
-    st.error("Gagal mengambil data live BSJP dari backend.")
-    st.code(str(err))
-    st.stop()
 
-if search.strip():
-    df = df[df["Emiten"].str.contains(search.strip().upper(), na=False)]
-
-ascending = True if sort_by == "BSJP Rank" else False
-df = df.sort_values(sort_by, ascending=ascending).reset_index(drop=True)
-if sort_by != "BSJP Rank":
-    df["BSJP Rank"] = range(1, len(df) + 1)
-
-if df.empty:
-    st.warning("Tidak ada saham yang cocok.")
-    st.stop()
-
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Total Saham", len(df))
-col2.metric("Top BSJP", df.iloc[0]["Emiten"])
-col3.metric("Top Score", f"{df.iloc[0]['Score']:.1f}")
-col4.metric("Last Update", str(df.iloc[0]['Updated'])[:19])
-
-num_pages = max(1, (len(df) + page_size - 1) // page_size)
-page = st.number_input("Halaman", min_value=1, max_value=num_pages, value=1, step=1)
-start = (page - 1) * page_size
-end = start + page_size
-page_df = df.iloc[start:end].copy()
-
-for row_start in range(0, len(page_df), 3):
-    cols = st.columns(3)
-    batch = page_df.iloc[row_start:row_start + 3]
-    for idx, (_, row) in enumerate(batch.iterrows()):
-        with cols[idx]:
-            st.markdown(render_card(row), unsafe_allow_html=True)
-
-st.subheader("Tabel Ringkas BSJP Live")
-st.dataframe(
-    df[["BSJP Rank", "Emiten", "Now", "Status", "Score", "Sinyal", "RSI 5M", "RVOL (%)", "TP", "SL", "RR", "Updated"]],
-    use_container_width=True,
-    height=360,
-)
-
-if auto_refresh:
-    time.sleep(refresh_seconds)
-    st.rerun()
+if __name__ == "__main__":
+    main()
