@@ -4,3 +4,4 @@ numpy
 requests
 yfinance
 plotly
+websocket-client
