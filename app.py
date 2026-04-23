@@ -1,15 +1,19 @@
-import requests
+import json
+import threading
+import time
 import textwrap
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
+import websocket
 import yfinance as yf
 
-st.set_page_config(page_title="Scalping Tight Real-Time", layout="wide")
+st.set_page_config(page_title="Scalping Ketat Real-Time", layout="wide")
 
 # =========================================================
 # CONFIG
@@ -49,6 +53,21 @@ h1, h2, h3, h4, h5, h6, p, span, div, label {
 """, unsafe_allow_html=True)
 
 # =========================================================
+# GLOBAL WS STATE
+# =========================================================
+WS_LOCK = threading.Lock()
+WS_STATE = {
+    "thread": None,
+    "running": False,
+    "connected": False,
+    "last_error": "",
+    "last_message_time": None,
+    "prices": {},
+    "subscriptions": [],
+    "symbol_alias_map": {}
+}
+
+# =========================================================
 # HELPERS
 # =========================================================
 def normalize_jk_symbol(symbol: str) -> str:
@@ -61,13 +80,21 @@ def normalize_jk_symbol(symbol: str) -> str:
         s = f"{s}.JK"
     return s
 
+def canonical_symbol(symbol: str) -> str:
+    s = symbol.strip().upper()
+    if ":" in s:
+        s = s.split(":")[-1]
+    s = s.replace(".JK", "")
+    return f"{s}.JK"
+
+def base_symbol(symbol: str) -> str:
+    return canonical_symbol(symbol).replace(".JK", "")
 
 def latest(series: pd.Series) -> float:
     try:
         return float(series.iloc[-1])
     except Exception:
         return np.nan
-
 
 def fmt_price(v):
     if pd.isna(v):
@@ -76,18 +103,15 @@ def fmt_price(v):
         return f"{v:,.0f}"
     return f"{v:,.2f}"
 
-
 def fmt_pct(v):
     if pd.isna(v):
         return "-"
     return f"{v:.1f}%"
 
-
 def rsi_cell_text(v):
     if pd.isna(v):
         return "-"
     return f"{v:.1f}"
-
 
 def human_value(v):
     if pd.isna(v):
@@ -100,6 +124,26 @@ def human_value(v):
         return f"{v / 1_000_000:.1f}M"
     return f"{v:,.0f}"
 
+def build_twelve_symbol_candidates(symbol: str):
+    base = base_symbol(symbol)
+    candidates = [
+        base,
+        f"{base}.JK",
+        f"IDX:{base}",
+        f"JK:{base}",
+    ]
+    return list(dict.fromkeys(candidates))
+
+def build_symbol_alias_map(symbols):
+    alias_map = {}
+    raw_subscriptions = []
+    for sym in symbols:
+        canonical = canonical_symbol(sym)
+        for raw in build_twelve_symbol_candidates(sym):
+            alias_map[raw.upper()] = canonical
+            raw_subscriptions.append(raw)
+    raw_subscriptions = list(dict.fromkeys(raw_subscriptions))
+    return raw_subscriptions, alias_map
 
 # =========================================================
 # TELEGRAM
@@ -123,7 +167,6 @@ def send_telegram_message(bot_token: str, chat_id: str, message: str):
         return False, f"HTTP {r.status_code}: {r.text}"
     except Exception as e:
         return False, str(e)
-
 
 # =========================================================
 # DATA SOURCE
@@ -153,7 +196,6 @@ def get_daily_data(symbol: str, period: str = "6mo", interval: str = "1d") -> pd
     except Exception:
         return pd.DataFrame()
 
-
 @st.cache_data(ttl=120)
 def get_intraday_5m(symbol: str) -> pd.DataFrame:
     try:
@@ -173,32 +215,6 @@ def get_intraday_5m(symbol: str) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
-
-def get_live_price_twelvedata(symbol: str, api_key: str):
-    if not api_key:
-        return np.nan
-
-    base = symbol.replace(".JK", "")
-    candidates = [
-        f"{base}",
-        f"IDX:{base}",
-        f"JK:{base}",
-        f"{base}.JK"
-    ]
-
-    for sym in candidates:
-        try:
-            url = "https://api.twelvedata.com/price"
-            r = requests.get(url, params={"symbol": sym, "apikey": api_key}, timeout=10)
-            data = r.json()
-            if "price" in data:
-                return float(data["price"])
-        except Exception:
-            pass
-
-    return np.nan
-
-
 def get_live_price_yf(symbol: str):
     try:
         df = yf.download(
@@ -211,7 +227,6 @@ def get_live_price_yf(symbol: str):
         )
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-
         if not df.empty and "Close" in df.columns:
             close_series = df["Close"].dropna()
             if not close_series.empty:
@@ -220,14 +235,139 @@ def get_live_price_yf(symbol: str):
         pass
     return np.nan
 
+def get_live_price_from_ws(symbol: str):
+    canonical = canonical_symbol(symbol)
+    with WS_LOCK:
+        info = WS_STATE["prices"].get(canonical)
+        if info:
+            return float(info["price"])
+    return np.nan
 
-def get_live_price(symbol: str, provider: str, api_key: str):
-    if provider == "Twelve Data":
-        px = get_live_price_twelvedata(symbol, api_key)
-        if not pd.isna(px):
-            return px
-    return get_live_price_yf(symbol)
+# =========================================================
+# WEBSOCKET ENGINE
+# =========================================================
+def start_twelve_ws(symbols, api_key):
+    if not api_key:
+        return False, "API key Twelve Data kosong."
 
+    wanted_subs, alias_map = build_symbol_alias_map(symbols)
+
+    with WS_LOCK:
+        WS_STATE["subscriptions"] = wanted_subs
+        WS_STATE["symbol_alias_map"] = alias_map
+
+        thread = WS_STATE.get("thread")
+        if thread is not None and thread.is_alive():
+            return True, "WebSocket sudah berjalan."
+
+        WS_STATE["running"] = True
+        WS_STATE["connected"] = False
+        WS_STATE["last_error"] = ""
+
+    def worker():
+        url = f"wss://ws.twelvedata.com/v1/quotes/price?apikey={api_key}"
+
+        while True:
+            with WS_LOCK:
+                if not WS_STATE["running"]:
+                    break
+                current_subs = list(WS_STATE["subscriptions"])
+                current_alias = dict(WS_STATE["symbol_alias_map"])
+
+            def on_open(ws):
+                with WS_LOCK:
+                    WS_STATE["connected"] = True
+                    WS_STATE["last_error"] = ""
+
+                if current_subs:
+                    payload = {
+                        "action": "subscribe",
+                        "params": {
+                            "symbols": ",".join(current_subs)
+                        }
+                    }
+                    ws.send(json.dumps(payload))
+
+                def heartbeat():
+                    while True:
+                        time.sleep(10)
+                        with WS_LOCK:
+                            if not WS_STATE["running"] or not WS_STATE["connected"]:
+                                break
+                        try:
+                            ws.send(json.dumps({"action": "heartbeat"}))
+                        except Exception:
+                            break
+
+                threading.Thread(target=heartbeat, daemon=True).start()
+
+            def on_message(ws, message):
+                try:
+                    data = json.loads(message)
+                except Exception:
+                    return
+
+                raw_symbol = str(data.get("symbol", "")).upper()
+                price = data.get("price", None)
+                ts = data.get("timestamp", None)
+
+                if raw_symbol and price is not None:
+                    try:
+                        price = float(price)
+                    except Exception:
+                        return
+
+                    canonical = current_alias.get(raw_symbol, canonical_symbol(raw_symbol))
+                    with WS_LOCK:
+                        WS_STATE["prices"][canonical] = {
+                            "price": price,
+                            "ts": ts,
+                            "raw_symbol": raw_symbol
+                        }
+                        WS_STATE["last_message_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            def on_error(ws, error):
+                with WS_LOCK:
+                    WS_STATE["connected"] = False
+                    WS_STATE["last_error"] = str(error)
+
+            def on_close(ws, close_status_code, close_msg):
+                with WS_LOCK:
+                    WS_STATE["connected"] = False
+                    if close_msg:
+                        WS_STATE["last_error"] = str(close_msg)
+
+            ws = websocket.WebSocketApp(
+                url,
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close,
+            )
+
+            try:
+                ws.run_forever(ping_interval=20, ping_timeout=10)
+            except Exception as e:
+                with WS_LOCK:
+                    WS_STATE["connected"] = False
+                    WS_STATE["last_error"] = str(e)
+
+            with WS_LOCK:
+                if not WS_STATE["running"]:
+                    break
+
+            time.sleep(3)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    with WS_LOCK:
+        WS_STATE["thread"] = thread
+    thread.start()
+    return True, "WebSocket dimulai."
+
+def stop_twelve_ws():
+    with WS_LOCK:
+        WS_STATE["running"] = False
+        WS_STATE["connected"] = False
 
 # =========================================================
 # INDICATORS
@@ -284,35 +424,32 @@ def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     return x
 
-
 # =========================================================
-# SCALPING ENGINE (TIGHT & STRICT)
+# ENGINE SCALPING KETAT
 # =========================================================
 def get_trend(close_, ma20, ma50):
     if pd.isna(close_) or pd.isna(ma20) or pd.isna(ma50):
-        return "NEUTRAL"
+        return "NETRAL"
     if close_ > ma20 > ma50:
-        return "BULL"
+        return "NAIK"
     if close_ < ma20 < ma50:
-        return "BEAR"
-    return "NEUTRAL"
-
+        return "TURUN"
+    return "NETRAL"
 
 def get_rsi_signal(rsi, macd, macd_signal):
     if pd.isna(rsi) or pd.isna(macd) or pd.isna(macd_signal):
-        return "WAIT"
+        return "TUNGGU"
     if 52 <= rsi <= 60 and macd > macd_signal:
-        return "UP"
+        return "NAIK"
     if rsi >= 60 and macd > macd_signal:
-        return "HOT"
+        return "PANAS"
     if rsi < 48 and macd < macd_signal:
-        return "DEAD"
-    return "WAIT"
-
+        return "LEMAH"
+    return "TUNGGU"
 
 def get_scalp_signal(close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5, vol_ma20, resistance, wick):
     if any(pd.isna(v) for v in [close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5, vol_ma20, resistance, wick]):
-        return "WAIT"
+        return "TUNGGU"
 
     breakout_near = close_ >= resistance * 0.985
     trend_ok = close_ > ema9 > ma20
@@ -322,40 +459,37 @@ def get_scalp_signal(close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5, v
     wick_ok = wick < 30
 
     if trend_ok and macd_ok and rsi_ok and vol_ok and breakout_near and wick_ok:
-        return "SCALP STRONG"
+        return "SCALPING KUAT"
 
     if trend_ok and macd_ok and 52 <= rsi <= 68 and vol > vol_ma5 and wick < 35:
-        return "SCALP READY"
+        return "SIAP SCALPING"
 
     if trend_ok and macd_ok and 50 <= rsi <= 65:
-        return "WATCH"
+        return "PANTAU"
 
     if rsi >= 74 or wick >= 40:
-        return "OVERHEAT"
+        return "TERLALU PANAS"
 
-    return "WAIT"
-
+    return "TUNGGU"
 
 def get_scalp_action(signal_label, close_, entry):
-    if signal_label == "SCALP STRONG":
+    if signal_label == "SCALPING KUAT":
         if not pd.isna(entry) and close_ <= entry * 1.01:
-            return "ENTRY NOW"
-        return "CHASE LIGHT"
-    if signal_label == "SCALP READY":
-        return "WAIT TRIGGER"
-    if signal_label == "WATCH":
-        return "WATCH"
-    if signal_label == "OVERHEAT":
-        return "AVOID"
-    return "WAIT"
-
+            return "BELI SEKARANG"
+        return "KEJAR RINGAN"
+    if signal_label == "SIAP SCALPING":
+        return "TUNGGU PEMICU"
+    if signal_label == "PANTAU":
+        return "PANTAU"
+    if signal_label == "TERLALU PANAS":
+        return "HINDARI"
+    return "TUNGGU"
 
 def compute_scalp_score(close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5, vol_ma20, resistance, wick):
     score = 0
 
     if not pd.isna(close_) and not pd.isna(ema9) and not pd.isna(ma20) and close_ > ema9 > ma20:
         score += 25
-
     if not pd.isna(rsi):
         if 56 <= rsi <= 68:
             score += 20
@@ -363,19 +497,14 @@ def compute_scalp_score(close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5
             score += 12
         elif rsi > 72:
             score -= 8
-
     if not pd.isna(macd) and not pd.isna(macd_signal) and macd > macd_signal:
         score += 18
-
     if not pd.isna(vol) and not pd.isna(vol_ma5) and vol > vol_ma5:
         score += 12
-
     if not pd.isna(vol) and not pd.isna(vol_ma20) and vol > vol_ma20:
         score += 10
-
     if not pd.isna(resistance) and close_ >= resistance * 0.985:
         score += 10
-
     if not pd.isna(wick):
         if wick < 20:
             score += 8
@@ -385,7 +514,6 @@ def compute_scalp_score(close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5
             score -= 10
 
     return max(min(score, 100), 0)
-
 
 # =========================================================
 # ROW BUILDER
@@ -463,8 +591,7 @@ def build_row(symbol: str, daily_df: pd.DataFrame, intraday_5m: pd.DataFrame, li
         "daily_df": df
     }
 
-
-def run_live_monitor(symbols, provider, api_key):
+def run_live_monitor(symbols, use_websocket):
     rows = []
     for symbol in symbols:
         try:
@@ -473,9 +600,15 @@ def run_live_monitor(symbols, provider, api_key):
                 continue
 
             intra5 = get_intraday_5m(symbol)
-            live_price = get_live_price(symbol, provider, api_key)
-            row = build_row(symbol, daily, intra5, live_price)
 
+            if use_websocket:
+                live_price = get_live_price_from_ws(symbol)
+                if pd.isna(live_price):
+                    live_price = get_live_price_yf(symbol)
+            else:
+                live_price = get_live_price_yf(symbol)
+
+            row = build_row(symbol, daily, intra5, live_price)
             if row is not None and not pd.isna(row["now"]):
                 rows.append(row)
         except Exception:
@@ -489,129 +622,89 @@ def run_live_monitor(symbols, provider, api_key):
         ascending=[False, False, False]
     ).reset_index(drop=True)
 
-
 # =========================================================
 # CELL COLORS
 # =========================================================
 def bg_gain(v):
-    if pd.isna(v):
-        return "#243244"
-    if v > 2:
-        return "#10b981"
-    if v > 0:
-        return "#15803d"
-    if v > -1.5:
-        return "#dc2626"
+    if pd.isna(v): return "#243244"
+    if v > 2: return "#10b981"
+    if v > 0: return "#15803d"
+    if v > -1.5: return "#dc2626"
     return "#991b1b"
 
-
 def bg_wick(v):
-    if pd.isna(v):
-        return "#243244"
-    if v < 20:
-        return "#0f766e"
-    if v < 30:
-        return "#2563eb"
-    if v < 40:
-        return "#d97706"
+    if pd.isna(v): return "#243244"
+    if v < 20: return "#0f766e"
+    if v < 30: return "#2563eb"
+    if v < 40: return "#d97706"
     return "#dc2626"
-
 
 def bg_aksi(v):
     mapping = {
-        "ENTRY NOW": "#7c3aed",
-        "CHASE LIGHT": "#1d4ed8",
-        "WAIT TRIGGER": "#b45309",
-        "WATCH": "#334155",
-        "AVOID": "#b91c1c",
-        "WAIT": "#111827"
+        "BELI SEKARANG": "#7c3aed",
+        "KEJAR RINGAN": "#1d4ed8",
+        "TUNGGU PEMICU": "#b45309",
+        "PANTAU": "#334155",
+        "HINDARI": "#b91c1c",
+        "TUNGGU": "#111827"
     }
     return mapping.get(v, "#334155")
-
 
 def bg_sinyal(v):
     mapping = {
-        "SCALP STRONG": "#7e22ce",
-        "SCALP READY": "#16a34a",
-        "WATCH": "#2563eb",
-        "OVERHEAT": "#ea580c",
-        "WAIT": "#111827"
+        "SCALPING KUAT": "#7e22ce",
+        "SIAP SCALPING": "#16a34a",
+        "PANTAU": "#2563eb",
+        "TERLALU PANAS": "#ea580c",
+        "TUNGGU": "#111827"
     }
     return mapping.get(v, "#334155")
 
-
 def bg_rvol(v):
-    if pd.isna(v):
-        return "#243244"
-    if v >= 250:
-        return "#9333ea"
-    if v >= 150:
-        return "#f97316"
-    if v >= 100:
-        return "#2563eb"
+    if pd.isna(v): return "#243244"
+    if v >= 250: return "#9333ea"
+    if v >= 150: return "#f97316"
+    if v >= 100: return "#2563eb"
     return "#374151"
-
 
 def bg_price(kind):
     mapping = {"entry": "#1d4ed8", "now": "#2563eb", "tp": "#16a34a", "sl": "#b91c1c"}
     return mapping.get(kind, "#243244")
 
-
 def bg_profit(v):
-    if pd.isna(v):
-        return "#243244"
-    if v > 1.5:
-        return "#16a34a"
-    if v > 0:
-        return "#0f766e"
-    if v > -1:
-        return "#92400e"
+    if pd.isna(v): return "#243244"
+    if v > 1.5: return "#16a34a"
+    if v > 0: return "#0f766e"
+    if v > -1: return "#92400e"
     return "#b91c1c"
 
-
 def bg_to_tp(v):
-    if pd.isna(v):
-        return "#243244"
-    if v <= 0.8:
-        return "#f97316"
-    if v <= 2:
-        return "#16a34a"
+    if pd.isna(v): return "#243244"
+    if v <= 0.8: return "#f97316"
+    if v <= 2: return "#16a34a"
     return "#0f766e"
 
-
 def bg_rsi_sig(v):
-    mapping = {"UP": "#16a34a", "HOT": "#7c3aed", "DEAD": "#dc2626", "WAIT": "#111827"}
+    mapping = {"NAIK": "#16a34a", "PANAS": "#7c3aed", "LEMAH": "#dc2626", "TUNGGU": "#111827"}
     return mapping.get(v, "#334155")
-
 
 def bg_rsi(v):
-    if pd.isna(v):
-        return "#243244"
-    if v >= 72:
-        return "#f59e0b"
-    if v >= 55:
-        return "#16a34a"
-    if v >= 48:
-        return "#2563eb"
+    if pd.isna(v): return "#243244"
+    if v >= 72: return "#f59e0b"
+    if v >= 55: return "#16a34a"
+    if v >= 48: return "#2563eb"
     return "#7c3aed"
 
-
 def bg_trend(v):
-    mapping = {"BULL": "#16a34a", "BEAR": "#dc2626", "NEUTRAL": "#6b7280"}
+    mapping = {"NAIK": "#16a34a", "TURUN": "#dc2626", "NETRAL": "#6b7280"}
     return mapping.get(v, "#334155")
 
-
 def bg_scalp_score(v):
-    if pd.isna(v):
-        return "#243244"
-    if v >= 80:
-        return "#9333ea"
-    if v >= 65:
-        return "#16a34a"
-    if v >= 50:
-        return "#2563eb"
+    if pd.isna(v): return "#243244"
+    if v >= 80: return "#9333ea"
+    if v >= 65: return "#16a34a"
+    if v >= 50: return "#2563eb"
     return "#374151"
-
 
 # =========================================================
 # HTML TABLE
@@ -694,23 +787,23 @@ def make_html_table(df: pd.DataFrame, title: str, sub: str):
           <tr>
             <th>RANK</th>
             <th>EMITEN</th>
-            <th>SCALP SCORE</th>
-            <th>GAIN</th>
+            <th>SKOR SCALPING</th>
+            <th>KENAIKAN</th>
             <th>WICK</th>
             <th>AKSI</th>
             <th>SINYAL</th>
             <th>RVOL</th>
-            <th>ENTRY</th>
-            <th>NOW</th>
+            <th>AREA BELI</th>
+            <th>HARGA SEKARANG</th>
             <th>TP1</th>
             <th>TP2</th>
-            <th>SL</th>
+            <th>BATAS RUGI</th>
             <th>PROFIT</th>
-            <th>%TO TP1</th>
-            <th>RSI SIG</th>
+            <th>% KE TP1</th>
+            <th>STATUS RSI</th>
             <th>RSI</th>
             <th>RSI 5M</th>
-            <th>VAL</th>
+            <th>NILAI</th>
             <th>TREND</th>
           </tr>
         </thead>
@@ -747,13 +840,12 @@ def make_html_table(df: pd.DataFrame, title: str, sub: str):
         </tbody>
       </table>
       </div>
-      <div class="footer-line">SCALPING TIGHT MODE | 1-5 saham | fokus breakout, EMA9, volume, RSI, MACD | live monitor</div>
+      <div class="footer-line">MODE SCALPING KETAT WEBSOCKET | 1-5 saham | breakout, EMA9, volume, RSI, MACD | live stream</div>
     </div>
     </body>
     </html>
     """
     return html
-
 
 # =========================================================
 # CHART DETAIL
@@ -781,13 +873,12 @@ def show_detail_chart(df: pd.DataFrame, symbol_name: str):
     )
     st.plotly_chart(fig, use_container_width=True)
 
-
 # =========================================================
 # HEADER
 # =========================================================
-st.title("SCALPING TIGHT REAL-TIME")
+st.title("SCALPING KETAT REAL-TIME — WEBSOCKET")
 st.markdown(
-    '<div class="small-note">fokus scalping ketat | 1-5 saham pilihan | EMA9 + MA20 + volume + RSI + MACD | live monitor</div>',
+    '<div class="small-note">fokus scalping ketat | 1-5 saham pilihan | WebSocket Twelve Data + fallback yfinance | panel live aman untuk Streamlit</div>',
     unsafe_allow_html=True
 )
 
@@ -802,15 +893,12 @@ with st.sidebar:
         value=DEFAULT_SYMBOLS
     )
 
-    live_provider = st.selectbox(
-        "Live Price Provider",
-        ["Fallback yfinance", "Twelve Data"],
-        index=0
-    )
-
+    use_websocket = st.checkbox("Aktifkan WebSocket Twelve Data", value=True)
     twelve_api_key = st.text_input("Twelve Data API Key", type="password")
     auto_refresh = st.checkbox("Auto Refresh Live", value=True)
     refresh_sec = st.selectbox("Refresh tiap", [2, 3, 5, 10], index=1)
+
+    st.caption("Catatan: WebSocket Twelve Data memerlukan plan yang mendukung WS. Jika data WS belum masuk, script akan fallback ke yfinance.")
 
     st.markdown("---")
     st.subheader("Telegram Bot")
@@ -823,7 +911,7 @@ with st.sidebar:
         now_text = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
         test_message = (
             "🤖 <b>Test Notifikasi Berhasil</b>\n"
-            "✅ Bot Telegram sudah terhubung ke scalping monitor.\n\n"
+            "✅ Bot Telegram sudah terhubung ke monitor scalping websocket.\n\n"
             f"🕒 <b>Waktu:</b> {now_text}\n"
             "📡 <b>Status:</b> ONLINE\n"
             "🔥 Sistem siap kirim alert scalping."
@@ -845,11 +933,50 @@ if not symbols:
     st.stop()
 
 # =========================================================
-# MAIN RENDER
+# START / STOP WEBSOCKET
+# =========================================================
+if use_websocket and twelve_api_key:
+    ok, msg = start_twelve_ws(symbols, twelve_api_key)
+else:
+    stop_twelve_ws()
+
+with WS_LOCK:
+    ws_connected = WS_STATE["connected"]
+    ws_last_error = WS_STATE["last_error"]
+    ws_last_msg = WS_STATE["last_message_time"]
+    ws_prices_snapshot = dict(WS_STATE["prices"])
+    ws_subs_snapshot = list(WS_STATE["subscriptions"])
+
+# =========================================================
+# TOP STATUS
+# =========================================================
+s1, s2, s3, s4 = st.columns(4)
+s1.metric("MODE", "WebSocket" if use_websocket else "Cadangan")
+s2.metric("STATUS WS", "TERHUBUNG" if ws_connected else "PUTUS")
+s3.metric("PESAN WS TERAKHIR", ws_last_msg if ws_last_msg else "-")
+s4.metric("JUMLAH SAHAM", len(symbols))
+
+if ws_last_error:
+    st.warning(f"Error WS: {ws_last_error}")
+
+with st.expander("Debug WebSocket"):
+    st.write("Simbol raw subscription:", ws_subs_snapshot)
+    st.write("Cache harga WS:", ws_prices_snapshot)
+
+# =========================================================
+# DETAIL WIDGET OUTSIDE FRAGMENT
+# =========================================================
+selected_symbol = st.selectbox(
+    "Pilih saham untuk detail",
+    symbols,
+    key="detail_symbol"
+)
+
+# =========================================================
+# RENDER FUNCTION
 # =========================================================
 def render_live_panel():
-    df = run_live_monitor(symbols, live_provider, twelve_api_key)
-
+    df = run_live_monitor(symbols, use_websocket=use_websocket)
     if df.empty:
         st.error("Tidak ada data yang berhasil diambil.")
         return
@@ -859,16 +986,16 @@ def render_live_panel():
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("MONITOR", ", ".join([x.replace(".JK", "") for x in symbols]))
-    m2.metric("TOP PICK", display_df.iloc[0]["symbol"])
-    m3.metric("TOP SCORE", int(display_df.iloc[0]["score_scalp"]))
-    m4.metric("LAST UPDATE", last_run)
+    m2.metric("PILIHAN TERATAS", display_df.iloc[0]["symbol"])
+    m3.metric("SKOR TERATAS", int(display_df.iloc[0]["score_scalp"]))
+    m4.metric("UPDATE TERAKHIR", last_run)
 
-    st.subheader("Scalping Live Table")
+    st.subheader("Tabel Live Scalping")
     components.html(
         make_html_table(
             display_df,
-            "SCALPING TIGHT REAL-TIME",
-            f"Update: {last_run} | Provider: {live_provider}"
+            "SCALPING KETAT REAL-TIME — WEBSOCKET",
+            f"Update: {last_run} | Sumber: {'Twelve WS' if use_websocket else 'yfinance cadangan'}"
         ),
         height=560,
         scrolling=True
@@ -880,30 +1007,30 @@ def render_live_panel():
         "trend", "score_scalp", "sinyal", "aksi"
     ]].copy()
     rank_df.columns = [
-        "EMITEN", "PRICE", "GAIN", "RVOL", "RSI", "RSI 5M",
-        "TREND", "SCALP SCORE", "SIGNAL", "AKSI"
+        "EMITEN", "HARGA", "KENAIKAN", "RVOL", "RSI", "RSI 5M",
+        "TREND", "SKOR SCALPING", "SINYAL", "AKSI"
     ]
-    rank_df["PRICE"] = rank_df["PRICE"].apply(fmt_price)
-    rank_df["GAIN"] = rank_df["GAIN"].apply(fmt_pct)
+    rank_df["HARGA"] = rank_df["HARGA"].apply(fmt_price)
+    rank_df["KENAIKAN"] = rank_df["KENAIKAN"].apply(fmt_pct)
     rank_df["RVOL"] = rank_df["RVOL"].apply(fmt_pct)
     rank_df["RSI"] = rank_df["RSI"].apply(rsi_cell_text)
     rank_df["RSI 5M"] = rank_df["RSI 5M"].apply(rsi_cell_text)
     st.dataframe(rank_df, use_container_width=True, height=260)
 
-    selected_symbol = st.selectbox(
-        "Pilih saham untuk detail",
-        display_df["full_symbol"].tolist(),
-        key="detail_symbol"
-    )
-    selected_row = display_df[display_df["full_symbol"] == selected_symbol].iloc[0]
+    selected_row_df = display_df[display_df["full_symbol"] == selected_symbol]
+    if selected_row_df.empty:
+        selected_row = display_df.iloc[0]
+    else:
+        selected_row = selected_row_df.iloc[0]
+
     selected_df = selected_row["daily_df"]
 
     d1, d2, d3, d4, d5, d6 = st.columns(6)
     d1.metric("EMITEN", selected_row["symbol"])
-    d2.metric("PRICE", fmt_price(selected_row["now"]))
-    d3.metric("GAIN", fmt_pct(selected_row["gain"]))
+    d2.metric("HARGA", fmt_price(selected_row["now"]))
+    d3.metric("KENAIKAN", fmt_pct(selected_row["gain"]))
     d4.metric("RVOL", fmt_pct(selected_row["rvol"]))
-    d5.metric("SCALP SCORE", int(selected_row["score_scalp"]))
+    d5.metric("SKOR SCALPING", int(selected_row["score_scalp"]))
     d6.metric("RSI 5M", rsi_cell_text(selected_row["rsi_5m"]))
 
     show_detail_chart(selected_df, selected_row["symbol"])
@@ -911,15 +1038,15 @@ def render_live_panel():
     st.subheader("Analisa Scalping Ketat")
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.write(f"**Signal:** {selected_row['sinyal']}")
+        st.write(f"**Sinyal:** {selected_row['sinyal']}")
         st.write(f"**Aksi:** {selected_row['aksi']}")
         st.write(f"**Trend:** {selected_row['trend']}")
     with c2:
-        st.write(f"**Entry:** {fmt_price(selected_row['entry'])}")
-        st.write(f"**TP1:** {fmt_price(selected_row['tp'])}")
-        st.write(f"**TP2:** {fmt_price(selected_row['tp2'])}")
+        st.write(f"**Area Beli:** {fmt_price(selected_row['entry'])}")
+        st.write(f"**Target 1:** {fmt_price(selected_row['tp'])}")
+        st.write(f"**Target 2:** {fmt_price(selected_row['tp2'])}")
     with c3:
-        st.write(f"**SL:** {fmt_price(selected_row['sl'])}")
+        st.write(f"**Batas Rugi:** {fmt_price(selected_row['sl'])}")
         st.write(f"**RSI:** {rsi_cell_text(selected_row['rsi'])}")
         st.write(f"**RSI 5M:** {rsi_cell_text(selected_row['rsi_5m'])}")
 
@@ -928,22 +1055,22 @@ def render_live_panel():
         alert_key = f"{top_row['symbol']}-{int(top_row['score_scalp'])}-{top_row['sinyal']}-{fmt_price(top_row['now'])}"
         last_alert_key = st.session_state.get("last_alert_key", "")
 
-        if top_row["score_scalp"] >= 70 and top_row["sinyal"] in ["SCALP STRONG", "SCALP READY"]:
+        if top_row["score_scalp"] >= 70 and top_row["sinyal"] in ["SCALPING KUAT", "SIAP SCALPING"]:
             if alert_key != last_alert_key:
                 message = (
-                    f"🚨 <b>SCALPING ALERT</b>\n"
+                    f"🚨 <b>ALERT SCALPING</b>\n"
                     f"🕒 <b>{last_run}</b>\n\n"
                     f"<b>{top_row['symbol']}</b>\n"
-                    f"💰 Price: <b>{fmt_price(top_row['now'])}</b>\n"
-                    f"📍 Signal: <b>{top_row['sinyal']}</b>\n"
-                    f"⚡ Action: <b>{top_row['aksi']}</b>\n"
-                    f"🏆 Scalp Score: <b>{int(top_row['score_scalp'])}</b>\n"
+                    f"💰 Harga: <b>{fmt_price(top_row['now'])}</b>\n"
+                    f"📍 Sinyal: <b>{top_row['sinyal']}</b>\n"
+                    f"⚡ Instruksi: <b>{top_row['aksi']}</b>\n"
+                    f"🏆 Skor Scalping: <b>{int(top_row['score_scalp'])}</b>\n"
                     f"⚡ RVOL: <b>{fmt_pct(top_row['rvol'])}</b>\n"
                     f"📈 Trend: <b>{top_row['trend']}</b>\n"
-                    f"🎯 Entry: <b>{fmt_price(top_row['entry'])}</b>\n"
-                    f"🏁 TP1: <b>{fmt_price(top_row['tp'])}</b>\n"
-                    f"🏁 TP2: <b>{fmt_price(top_row['tp2'])}</b>\n"
-                    f"🛑 SL: <b>{fmt_price(top_row['sl'])}</b>"
+                    f"🎯 Area Beli: <b>{fmt_price(top_row['entry'])}</b>\n"
+                    f"🏁 Target 1: <b>{fmt_price(top_row['tp'])}</b>\n"
+                    f"🏁 Target 2: <b>{fmt_price(top_row['tp2'])}</b>\n"
+                    f"🛑 Batas Rugi: <b>{fmt_price(top_row['sl'])}</b>"
                 )
                 ok, _ = send_telegram_message(telegram_bot_token, telegram_chat_id, message)
                 if ok:
@@ -951,7 +1078,7 @@ def render_live_panel():
                     st.success("Alert Telegram terkirim")
 
 # =========================================================
-# AUTO REFRESH
+# AUTO REFRESH FRAGMENT
 # =========================================================
 if auto_refresh:
     @st.fragment(run_every=f"{refresh_sec}s")
