@@ -1,12 +1,13 @@
 import requests
 import textwrap
 from datetime import datetime
+
 import numpy as np
 import pandas as pd
-import streamlit as st
-import yfinance as yf
 import plotly.graph_objects as go
+import streamlit as st
 import streamlit.components.v1 as components
+import yfinance as yf
 
 st.set_page_config(page_title="Scalping Tight Real-Time", layout="wide")
 
@@ -60,11 +61,13 @@ def normalize_jk_symbol(symbol: str) -> str:
         s = f"{s}.JK"
     return s
 
+
 def latest(series: pd.Series) -> float:
     try:
         return float(series.iloc[-1])
     except Exception:
         return np.nan
+
 
 def fmt_price(v):
     if pd.isna(v):
@@ -73,15 +76,18 @@ def fmt_price(v):
         return f"{v:,.0f}"
     return f"{v:,.2f}"
 
+
 def fmt_pct(v):
     if pd.isna(v):
         return "-"
     return f"{v:.1f}%"
 
+
 def rsi_cell_text(v):
     if pd.isna(v):
         return "-"
     return f"{v:.1f}"
+
 
 def human_value(v):
     if pd.isna(v):
@@ -93,6 +99,7 @@ def human_value(v):
     if v >= 1_000_000:
         return f"{v / 1_000_000:.1f}M"
     return f"{v:,.0f}"
+
 
 # =========================================================
 # TELEGRAM
@@ -117,29 +124,47 @@ def send_telegram_message(bot_token: str, chat_id: str, message: str):
     except Exception as e:
         return False, str(e)
 
+
 # =========================================================
 # DATA SOURCE
 # =========================================================
 @st.cache_data(ttl=600)
 def get_daily_data(symbol: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
     try:
-        df = yf.download(symbol, period=period, interval=interval, auto_adjust=False, progress=False, threads=False)
+        df = yf.download(
+            symbol,
+            period=period,
+            interval=interval,
+            auto_adjust=False,
+            progress=False,
+            threads=False
+        )
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         if df.empty:
             return pd.DataFrame()
+
         needed = ["Open", "High", "Low", "Close", "Volume"]
         for col in needed:
             if col not in df.columns:
                 return pd.DataFrame()
+
         return df.dropna(subset=["Open", "High", "Low", "Close"]).copy()
     except Exception:
         return pd.DataFrame()
 
+
 @st.cache_data(ttl=120)
 def get_intraday_5m(symbol: str) -> pd.DataFrame:
     try:
-        df = yf.download(symbol, period="5d", interval="5m", auto_adjust=False, progress=False, threads=False)
+        df = yf.download(
+            symbol,
+            period="5d",
+            interval="5m",
+            auto_adjust=False,
+            progress=False,
+            threads=False
+        )
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         if df.empty:
@@ -147,6 +172,7 @@ def get_intraday_5m(symbol: str) -> pd.DataFrame:
         return df.dropna().copy()
     except Exception:
         return pd.DataFrame()
+
 
 def get_live_price_twelvedata(symbol: str, api_key: str):
     if not api_key:
@@ -172,11 +198,20 @@ def get_live_price_twelvedata(symbol: str, api_key: str):
 
     return np.nan
 
+
 def get_live_price_yf(symbol: str):
     try:
-        df = yf.download(symbol, period="1d", interval="1m", auto_adjust=False, progress=False, threads=False)
+        df = yf.download(
+            symbol,
+            period="1d",
+            interval="1m",
+            auto_adjust=False,
+            progress=False,
+            threads=False
+        )
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
+
         if not df.empty and "Close" in df.columns:
             close_series = df["Close"].dropna()
             if not close_series.empty:
@@ -185,12 +220,14 @@ def get_live_price_yf(symbol: str):
         pass
     return np.nan
 
+
 def get_live_price(symbol: str, provider: str, api_key: str):
     if provider == "Twelve Data":
         px = get_live_price_twelvedata(symbol, api_key)
         if not pd.isna(px):
             return px
     return get_live_price_yf(symbol)
+
 
 # =========================================================
 # INDICATORS
@@ -247,6 +284,7 @@ def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     return x
 
+
 # =========================================================
 # SCALPING ENGINE (TIGHT & STRICT)
 # =========================================================
@@ -259,6 +297,7 @@ def get_trend(close_, ma20, ma50):
         return "BEAR"
     return "NEUTRAL"
 
+
 def get_rsi_signal(rsi, macd, macd_signal):
     if pd.isna(rsi) or pd.isna(macd) or pd.isna(macd_signal):
         return "WAIT"
@@ -269,6 +308,7 @@ def get_rsi_signal(rsi, macd, macd_signal):
     if rsi < 48 and macd < macd_signal:
         return "DEAD"
     return "WAIT"
+
 
 def get_scalp_signal(close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5, vol_ma20, resistance, wick):
     if any(pd.isna(v) for v in [close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5, vol_ma20, resistance, wick]):
@@ -295,6 +335,7 @@ def get_scalp_signal(close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5, v
 
     return "WAIT"
 
+
 def get_scalp_action(signal_label, close_, entry):
     if signal_label == "SCALP STRONG":
         if not pd.isna(entry) and close_ <= entry * 1.01:
@@ -307,6 +348,7 @@ def get_scalp_action(signal_label, close_, entry):
     if signal_label == "OVERHEAT":
         return "AVOID"
     return "WAIT"
+
 
 def compute_scalp_score(close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5, vol_ma20, resistance, wick):
     score = 0
@@ -343,6 +385,7 @@ def compute_scalp_score(close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5
             score -= 10
 
     return max(min(score, 100), 0)
+
 
 # =========================================================
 # ROW BUILDER
@@ -420,6 +463,7 @@ def build_row(symbol: str, daily_df: pd.DataFrame, intraday_5m: pd.DataFrame, li
         "daily_df": df
     }
 
+
 def run_live_monitor(symbols, provider, api_key):
     rows = []
     for symbol in symbols:
@@ -427,9 +471,11 @@ def run_live_monitor(symbols, provider, api_key):
             daily = get_daily_data(symbol, period="6mo", interval="1d")
             if daily.empty:
                 continue
+
             intra5 = get_intraday_5m(symbol)
             live_price = get_live_price(symbol, provider, api_key)
             row = build_row(symbol, daily, intra5, live_price)
+
             if row is not None and not pd.isna(row["now"]):
                 rows.append(row)
         except Exception:
@@ -442,6 +488,7 @@ def run_live_monitor(symbols, provider, api_key):
         ["score_scalp", "rvol", "gain"],
         ascending=[False, False, False]
     ).reset_index(drop=True)
+
 
 # =========================================================
 # CELL COLORS
@@ -457,6 +504,7 @@ def bg_gain(v):
         return "#dc2626"
     return "#991b1b"
 
+
 def bg_wick(v):
     if pd.isna(v):
         return "#243244"
@@ -467,6 +515,7 @@ def bg_wick(v):
     if v < 40:
         return "#d97706"
     return "#dc2626"
+
 
 def bg_aksi(v):
     mapping = {
@@ -479,6 +528,7 @@ def bg_aksi(v):
     }
     return mapping.get(v, "#334155")
 
+
 def bg_sinyal(v):
     mapping = {
         "SCALP STRONG": "#7e22ce",
@@ -488,6 +538,7 @@ def bg_sinyal(v):
         "WAIT": "#111827"
     }
     return mapping.get(v, "#334155")
+
 
 def bg_rvol(v):
     if pd.isna(v):
@@ -500,9 +551,11 @@ def bg_rvol(v):
         return "#2563eb"
     return "#374151"
 
+
 def bg_price(kind):
     mapping = {"entry": "#1d4ed8", "now": "#2563eb", "tp": "#16a34a", "sl": "#b91c1c"}
     return mapping.get(kind, "#243244")
+
 
 def bg_profit(v):
     if pd.isna(v):
@@ -515,6 +568,7 @@ def bg_profit(v):
         return "#92400e"
     return "#b91c1c"
 
+
 def bg_to_tp(v):
     if pd.isna(v):
         return "#243244"
@@ -524,9 +578,11 @@ def bg_to_tp(v):
         return "#16a34a"
     return "#0f766e"
 
+
 def bg_rsi_sig(v):
     mapping = {"UP": "#16a34a", "HOT": "#7c3aed", "DEAD": "#dc2626", "WAIT": "#111827"}
     return mapping.get(v, "#334155")
+
 
 def bg_rsi(v):
     if pd.isna(v):
@@ -539,9 +595,11 @@ def bg_rsi(v):
         return "#2563eb"
     return "#7c3aed"
 
+
 def bg_trend(v):
     mapping = {"BULL": "#16a34a", "BEAR": "#dc2626", "NEUTRAL": "#6b7280"}
     return mapping.get(v, "#334155")
+
 
 def bg_scalp_score(v):
     if pd.isna(v):
@@ -553,6 +611,7 @@ def bg_scalp_score(v):
     if v >= 50:
         return "#2563eb"
     return "#374151"
+
 
 # =========================================================
 # HTML TABLE
@@ -695,6 +754,7 @@ def make_html_table(df: pd.DataFrame, title: str, sub: str):
     """
     return html
 
+
 # =========================================================
 # CHART DETAIL
 # =========================================================
@@ -720,6 +780,7 @@ def show_detail_chart(df: pd.DataFrame, symbol_name: str):
         margin=dict(l=20, r=20, t=40, b=20)
     )
     st.plotly_chart(fig, use_container_width=True)
+
 
 # =========================================================
 # HEADER
@@ -784,110 +845,114 @@ if not symbols:
     st.stop()
 
 # =========================================================
-# RENDER PANEL
+# MAIN RENDER
 # =========================================================
-live_placeholder = st.empty()
-
 def render_live_panel():
     df = run_live_monitor(symbols, live_provider, twelve_api_key)
 
     if df.empty:
-        live_placeholder.error("Tidak ada data yang berhasil diambil.")
+        st.error("Tidak ada data yang berhasil diambil.")
         return
 
     display_df = df.head(TOP_N).reset_index(drop=True)
     last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    with live_placeholder.container():
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("MONITOR", ", ".join([x.replace(".JK", "") for x in symbols]))
-        m2.metric("TOP PICK", display_df.iloc[0]["symbol"])
-        m3.metric("TOP SCORE", int(display_df.iloc[0]["score_scalp"]))
-        m4.metric("LAST UPDATE", last_run)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("MONITOR", ", ".join([x.replace(".JK", "") for x in symbols]))
+    m2.metric("TOP PICK", display_df.iloc[0]["symbol"])
+    m3.metric("TOP SCORE", int(display_df.iloc[0]["score_scalp"]))
+    m4.metric("LAST UPDATE", last_run)
 
-        st.subheader("Scalping Live Table")
-        components.html(
-            make_html_table(
-                display_df,
-                "SCALPING TIGHT REAL-TIME",
-                f"Update: {last_run} | Provider: {live_provider}"
-            ),
-            height=560,
-            scrolling=True
-        )
+    st.subheader("Scalping Live Table")
+    components.html(
+        make_html_table(
+            display_df,
+            "SCALPING TIGHT REAL-TIME",
+            f"Update: {last_run} | Provider: {live_provider}"
+        ),
+        height=560,
+        scrolling=True
+    )
 
-        st.subheader("Ranking Live")
-        rank_df = display_df[[
-            "symbol", "now", "gain", "rvol", "rsi", "rsi_5m",
-            "trend", "score_scalp", "sinyal", "aksi"
-        ]].copy()
-        rank_df.columns = [
-            "EMITEN", "PRICE", "GAIN", "RVOL", "RSI", "RSI 5M",
-            "TREND", "SCALP SCORE", "SIGNAL", "AKSI"
-        ]
-        rank_df["PRICE"] = rank_df["PRICE"].apply(fmt_price)
-        rank_df["GAIN"] = rank_df["GAIN"].apply(fmt_pct)
-        rank_df["RVOL"] = rank_df["RVOL"].apply(fmt_pct)
-        rank_df["RSI"] = rank_df["RSI"].apply(rsi_cell_text)
-        rank_df["RSI 5M"] = rank_df["RSI 5M"].apply(rsi_cell_text)
-        st.dataframe(rank_df, use_container_width=True, height=260)
+    st.subheader("Ranking Live")
+    rank_df = display_df[[
+        "symbol", "now", "gain", "rvol", "rsi", "rsi_5m",
+        "trend", "score_scalp", "sinyal", "aksi"
+    ]].copy()
+    rank_df.columns = [
+        "EMITEN", "PRICE", "GAIN", "RVOL", "RSI", "RSI 5M",
+        "TREND", "SCALP SCORE", "SIGNAL", "AKSI"
+    ]
+    rank_df["PRICE"] = rank_df["PRICE"].apply(fmt_price)
+    rank_df["GAIN"] = rank_df["GAIN"].apply(fmt_pct)
+    rank_df["RVOL"] = rank_df["RVOL"].apply(fmt_pct)
+    rank_df["RSI"] = rank_df["RSI"].apply(rsi_cell_text)
+    rank_df["RSI 5M"] = rank_df["RSI 5M"].apply(rsi_cell_text)
+    st.dataframe(rank_df, use_container_width=True, height=260)
 
-        selected_symbol = st.selectbox("Pilih saham untuk detail", display_df["full_symbol"].tolist(), key="detail_symbol")
-        selected_row = display_df[display_df["full_symbol"] == selected_symbol].iloc[0]
-        selected_df = selected_row["daily_df"]
+    selected_symbol = st.selectbox(
+        "Pilih saham untuk detail",
+        display_df["full_symbol"].tolist(),
+        key="detail_symbol"
+    )
+    selected_row = display_df[display_df["full_symbol"] == selected_symbol].iloc[0]
+    selected_df = selected_row["daily_df"]
 
-        d1, d2, d3, d4, d5, d6 = st.columns(6)
-        d1.metric("EMITEN", selected_row["symbol"])
-        d2.metric("PRICE", fmt_price(selected_row["now"]))
-        d3.metric("GAIN", fmt_pct(selected_row["gain"]))
-        d4.metric("RVOL", fmt_pct(selected_row["rvol"]))
-        d5.metric("SCALP SCORE", int(selected_row["score_scalp"]))
-        d6.metric("RSI 5M", rsi_cell_text(selected_row["rsi_5m"]))
+    d1, d2, d3, d4, d5, d6 = st.columns(6)
+    d1.metric("EMITEN", selected_row["symbol"])
+    d2.metric("PRICE", fmt_price(selected_row["now"]))
+    d3.metric("GAIN", fmt_pct(selected_row["gain"]))
+    d4.metric("RVOL", fmt_pct(selected_row["rvol"]))
+    d5.metric("SCALP SCORE", int(selected_row["score_scalp"]))
+    d6.metric("RSI 5M", rsi_cell_text(selected_row["rsi_5m"]))
 
-        show_detail_chart(selected_df, selected_row["symbol"])
+    show_detail_chart(selected_df, selected_row["symbol"])
 
-        st.subheader("Analisa Scalping Ketat")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.write(f"**Signal:** {selected_row['sinyal']}")
-            st.write(f"**Aksi:** {selected_row['aksi']}")
-            st.write(f"**Trend:** {selected_row['trend']}")
-        with c2:
-            st.write(f"**Entry:** {fmt_price(selected_row['entry'])}")
-            st.write(f"**TP1:** {fmt_price(selected_row['tp'])}")
-            st.write(f"**TP2:** {fmt_price(selected_row['tp2'])}")
-        with c3:
-            st.write(f"**SL:** {fmt_price(selected_row['sl'])}")
-            st.write(f"**RSI:** {rsi_cell_text(selected_row['rsi'])}")
-            st.write(f"**RSI 5M:** {rsi_cell_text(selected_row['rsi_5m'])}")
+    st.subheader("Analisa Scalping Ketat")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.write(f"**Signal:** {selected_row['sinyal']}")
+        st.write(f"**Aksi:** {selected_row['aksi']}")
+        st.write(f"**Trend:** {selected_row['trend']}")
+    with c2:
+        st.write(f"**Entry:** {fmt_price(selected_row['entry'])}")
+        st.write(f"**TP1:** {fmt_price(selected_row['tp'])}")
+        st.write(f"**TP2:** {fmt_price(selected_row['tp2'])}")
+    with c3:
+        st.write(f"**SL:** {fmt_price(selected_row['sl'])}")
+        st.write(f"**RSI:** {rsi_cell_text(selected_row['rsi'])}")
+        st.write(f"**RSI 5M:** {rsi_cell_text(selected_row['rsi_5m'])}")
 
-        if telegram_enabled and telegram_bot_token and telegram_chat_id:
-            top_row = display_df.iloc[0]
-            alert_key = f"{top_row['symbol']}-{int(top_row['score_scalp'])}-{top_row['sinyal']}-{fmt_price(top_row['now'])}"
-            last_alert_key = st.session_state.get("last_alert_key", "")
+    if telegram_enabled and telegram_bot_token and telegram_chat_id:
+        top_row = display_df.iloc[0]
+        alert_key = f"{top_row['symbol']}-{int(top_row['score_scalp'])}-{top_row['sinyal']}-{fmt_price(top_row['now'])}"
+        last_alert_key = st.session_state.get("last_alert_key", "")
 
-            if top_row["score_scalp"] >= 70 and top_row["sinyal"] in ["SCALP STRONG", "SCALP READY"]:
-                if alert_key != last_alert_key:
-                    message = (
-                        f"🚨 <b>SCALPING ALERT</b>\n"
-                        f"🕒 <b>{last_run}</b>\n\n"
-                        f"<b>{top_row['symbol']}</b>\n"
-                        f"💰 Price: <b>{fmt_price(top_row['now'])}</b>\n"
-                        f"📍 Signal: <b>{top_row['sinyal']}</b>\n"
-                        f"⚡ Action: <b>{top_row['aksi']}</b>\n"
-                        f"🏆 Scalp Score: <b>{int(top_row['score_scalp'])}</b>\n"
-                        f"⚡ RVOL: <b>{fmt_pct(top_row['rvol'])}</b>\n"
-                        f"📈 Trend: <b>{top_row['trend']}</b>\n"
-                        f"🎯 Entry: <b>{fmt_price(top_row['entry'])}</b>\n"
-                        f"🏁 TP1: <b>{fmt_price(top_row['tp'])}</b>\n"
-                        f"🏁 TP2: <b>{fmt_price(top_row['tp2'])}</b>\n"
-                        f"🛑 SL: <b>{fmt_price(top_row['sl'])}</b>"
-                    )
-                    ok, _ = send_telegram_message(telegram_bot_token, telegram_chat_id, message)
-                    if ok:
-                        st.session_state["last_alert_key"] = alert_key
-                        st.success("Alert Telegram terkirim")
+        if top_row["score_scalp"] >= 70 and top_row["sinyal"] in ["SCALP STRONG", "SCALP READY"]:
+            if alert_key != last_alert_key:
+                message = (
+                    f"🚨 <b>SCALPING ALERT</b>\n"
+                    f"🕒 <b>{last_run}</b>\n\n"
+                    f"<b>{top_row['symbol']}</b>\n"
+                    f"💰 Price: <b>{fmt_price(top_row['now'])}</b>\n"
+                    f"📍 Signal: <b>{top_row['sinyal']}</b>\n"
+                    f"⚡ Action: <b>{top_row['aksi']}</b>\n"
+                    f"🏆 Scalp Score: <b>{int(top_row['score_scalp'])}</b>\n"
+                    f"⚡ RVOL: <b>{fmt_pct(top_row['rvol'])}</b>\n"
+                    f"📈 Trend: <b>{top_row['trend']}</b>\n"
+                    f"🎯 Entry: <b>{fmt_price(top_row['entry'])}</b>\n"
+                    f"🏁 TP1: <b>{fmt_price(top_row['tp'])}</b>\n"
+                    f"🏁 TP2: <b>{fmt_price(top_row['tp2'])}</b>\n"
+                    f"🛑 SL: <b>{fmt_price(top_row['sl'])}</b>"
+                )
+                ok, _ = send_telegram_message(telegram_bot_token, telegram_chat_id, message)
+                if ok:
+                    st.session_state["last_alert_key"] = alert_key
+                    st.success("Alert Telegram terkirim")
 
+# =========================================================
+# AUTO REFRESH
+# =========================================================
 if auto_refresh:
     @st.fragment(run_every=f"{refresh_sec}s")
     def live_fragment():
