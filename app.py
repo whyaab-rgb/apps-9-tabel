@@ -330,9 +330,52 @@ DEFAULT_TICKERS = [
     "KLBF.JK","LPPF.JK","LSIP.JK","MAPI.JK","MBMA.JK","MDIA.JK","MDKA.JK","MEDC.JK","MIKA.JK","MNCN.JK",
     "MTEL.JK","PGAS.JK","PTBA.JK","PTPP.JK","PWON.JK","SIDO.JK","SMGR.JK","SMRA.JK","TLKM.JK","TOWR.JK",
     "UNTR.JK","UNVR.JK","WIKA.JK","WMUU.JK","ZATA.JK","BIPI.JK","BNBR.JK","BULL.JK","BUMI.JK","COAL.JK",
-    "INET.JK","KETR.JK","KOTA.JK","NICL.JK","PYFA.JK","SRTG.JK","TINS.JK","TKIM.JK","BBYB.JK","BBYB.JK",
+    "INET.JK","KETR.JK","KOTA.JK","NICL.JK","PYFA.JK","SRTG.JK","TINS.JK","TKIM.JK","BBYB.JK",
 ]
 DEFAULT_TICKERS = sorted(list(set(DEFAULT_TICKERS)))
+
+
+@st.cache_data(ttl=60 * 60 * 12, show_spinner=False)
+def get_all_idx_tickers() -> list[str]:
+    urls = [
+        "https://www.idx.co.id/id/data-pasar/data-saham/daftar-saham/",
+        "https://www.idx.co.id/en/market-data/stocks-data/stock-list",
+    ]
+    collected = set()
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
+    }
+
+    for url in urls:
+        try:
+            tables = pd.read_html(url, storage_options=headers)
+            for table in tables:
+                cols = [str(c).strip().upper() for c in table.columns]
+                table.columns = cols
+                candidate_cols = [
+                    c for c in cols
+                    if c in ["KODE", "KODE SAHAM", "CODE", "STOCK CODE", "SYMBOL"]
+                ]
+                if not candidate_cols:
+                    continue
+                code_col = candidate_cols[0]
+                codes = (
+                    table[code_col]
+                    .astype(str)
+                    .str.strip()
+                    .str.upper()
+                    .str.replace(r"[^A-Z0-9]", "", regex=True)
+                )
+                codes = codes[codes.str.match(r"^[A-Z]{2,5}$", na=False)]
+                collected.update({f"{c}.JK" for c in codes.tolist()})
+        except Exception:
+            continue
+
+    if collected:
+        return sorted(collected)
+    return DEFAULT_TICKERS
 
 
 # =========================
@@ -594,22 +637,24 @@ def style_dataframe(df: pd.DataFrame):
         .map(color_gain, subset=["GAIN", "PROFIT%"])
         .map(color_score, subset=["Score"])
         .map(color_signal, subset=["SINYAL"])
-        .map(color_action, subset=["AKSI"])
-        .map(color_phase, subset=["FASE"])
+        .set_properties(subset=["RANK"], **{
+            "font-weight": "800",
+            "background-color": "rgba(22,70,255,0.32)",
+            "color": "#ffffff",
+        })
+        .set_properties(subset=["Ticker"], **{
+            "font-weight": "800",
+            "color": "#9dd0ff",
+            "background-color": "rgba(8, 30, 60, 0.40)",
+        })
+        .set_properties(subset=["FASE_UI", "SETUP_UI", "AKSI_UI", "DAY_UI", "ENTRY_ZONE", "TP_PLAN", "LEVELS", "VOL_UI", "REGIME_UI"], **{
+            "font-weight": "700",
+        })
         .format({
             "GAIN": fmt_pct,
-            "ENTRY": fmt_price,
-            "TP1": fmt_price,
-            "TP2": fmt_price,
-            "TP3": fmt_price,
             "TRAIL_SL": fmt_price,
             "PROFIT%": fmt_pct,
             "RSI": lambda x: "-" if pd.isna(x) else f"{x:.1f}",
-            "S1": fmt_price,
-            "R1": fmt_price,
-            "VOL": lambda x: "-" if pd.isna(x) else f"{x/1_000_000:.2f}M",
-            "RVOL": lambda x: "-" if pd.isna(x) else f"{x:.2f}x",
-            "Price": fmt_price,
         })
     )
 
@@ -622,17 +667,18 @@ auto_refresh = st.sidebar.checkbox("Auto refresh 60 detik", value=True)
 if auto_refresh:
     st_autorefresh(interval=60_000, key="refresh_scanner")
 
-use_default = st.sidebar.checkbox("Pakai watchlist default", value=True)
+scan_all_idx = st.sidebar.checkbox("Scan semua ticker IDX", value=True)
+use_default = st.sidebar.checkbox("Pakai watchlist default", value=not scan_all_idx)
 custom_input = st.sidebar.text_area(
     "Custom ticker (.JK dipisah koma)",
     value="BBCA.JK, BBRI.JK, BMRI.JK, TLKM.JK, ASII.JK, ADRO.JK, WMUU.JK, ENRG.JK, BIPI.JK, BNBR.JK",
     height=110,
 )
 
-max_workers = st.sidebar.slider("Thread scanner", 4, 16, 8)
+max_workers = st.sidebar.slider("Thread scanner", 4, 24, 12)
 max_price_filter_enabled = st.sidebar.checkbox("Batasi harga maksimal", value=False)
 max_price = st.sidebar.number_input("Harga maksimal", min_value=1, value=1000, step=10)
-show_top_n = st.sidebar.slider("Tampilkan Top N", 10, 100, 30)
+show_top_n = st.sidebar.slider("Tampilkan Top N", 10, 150, 50)
 search_text = st.sidebar.text_input("Cari emiten")
 
 st.sidebar.markdown("---")
@@ -670,8 +716,13 @@ st.markdown(
 # =========================
 custom_tickers = [t.strip().upper() for t in custom_input.split(",") if t.strip()]
 tickers = []
-if use_default:
+
+if scan_all_idx:
+    with st.spinner("Mengambil daftar semua ticker IDX resmi..."):
+        tickers.extend(get_all_idx_tickers())
+elif use_default:
     tickers.extend(DEFAULT_TICKERS)
+
 tickers.extend(custom_tickers)
 tickers = [t if t.endswith(".JK") else f"{t}.JK" for t in tickers]
 tickers = sorted(list(dict.fromkeys(tickers)))
@@ -780,12 +831,74 @@ if notif_errors:
 # =========================
 df_display = df.copy()
 df_display.insert(0, "No", np.arange(1, len(df_display) + 1))
-df_display = df_display.head(show_top_n)
+df_display = df_display.head(show_top_n).copy()
+
+def rank_badge(n: int) -> str:
+    if n == 1:
+        return "🥇 #1"
+    if n == 2:
+        return "🥈 #2"
+    if n == 3:
+        return "🥉 #3"
+    return f"#{n}"
+
+
+def regime_badge(x: str) -> str:
+    return "🟢 BULLISH" if x == "Bullish" else "🔴 BEARISH" if x == "Bearish" else "🟡 NEUTRAL"
+
+
+def phase_badge(x: str) -> str:
+    return "🟢 PART" if x == "BULLISH" else "🔴 LEMAH" if x == "BEARISH" else "🟡 AKUM"
+
+
+def setup_badge(x: str) -> str:
+    mapping = {
+        "BREAKOUT": "🚀 BREAKOUT",
+        "REBOUND": "🟢 REBOUND",
+        "GC ONLY": "✨ GC ONLY",
+        "DEAD CROSS": "💀 DEAD CROSS",
+        "OVERHEAT": "🔥 OVERHEAT",
+        "OVERSOLD": "🛟 OVERSOLD",
+        "WAIT": "⏳ WAIT",
+    }
+    return mapping.get(x, x)
+
+
+def action_badge(x: str) -> str:
+    mapping = {
+        "ENTRY ONLY": "🟢 ENTRY NOW",
+        "ON TRACK": "📈 ON TRACK",
+        "EXIT": "🚪 EXIT",
+        "WAIT": "⏳ WAIT",
+    }
+    return mapping.get(x, x)
+
+
+def day_badge(x: str) -> str:
+    mapping = {
+        "NAIK KUAT": "🚀 NAIK KUAT",
+        "NAIK": "📈 NAIK",
+        "STABIL": "➖ STABIL",
+        "TURUN, EKOR BAWAH": "🪝 TURUN, EKOR BAWAH",
+        "TURUN": "🔻 TURUN",
+    }
+    return mapping.get(x, x)
+
+
+df_display["RANK"] = df_display["No"].apply(rank_badge)
+df_display["FASE_UI"] = df_display["FASE"].apply(phase_badge)
+df_display["SETUP_UI"] = df_display["SETUP"].apply(setup_badge)
+df_display["AKSI_UI"] = df_display["AKSI"].apply(action_badge)
+df_display["DAY_UI"] = df_display["DAY"].apply(day_badge)
+df_display["REGIME_UI"] = df_display["Regime"].apply(regime_badge)
+df_display["ENTRY_ZONE"] = df_display.apply(lambda r: f"{fmt_price(r['ENTRY'])} / {fmt_price(r['Price'])}", axis=1)
+df_display["TP_PLAN"] = df_display.apply(lambda r: f"{fmt_price(r['TP1'])} / {fmt_price(r['TP2'])} / {fmt_price(r['TP3'])}", axis=1)
+df_display["LEVELS"] = df_display.apply(lambda r: f"S1 {fmt_price(r['S1'])} | R1 {fmt_price(r['R1'])}", axis=1)
+df_display["VOL_UI"] = df_display.apply(lambda r: f"{r['VOL']/1_000_000:.2f}M | RVOL {r['RVOL']:.2f}x" if pd.notna(r['VOL']) and pd.notna(r['RVOL']) else "-", axis=1)
 
 show_cols = [
-    "No", "Ticker", "FASE", "SETUP", "AKSI", "GAIN", "DAY", "ENTRY",
-    "TP1", "TP2", "TP3", "TRAIL_SL", "PROFIT%", "RSI", "SINYAL",
-    "S1", "R1", "VOL", "RVOL", "Score", "Regime", "Price"
+    "RANK", "Ticker", "FASE_UI", "SETUP_UI", "AKSI_UI", "GAIN", "DAY_UI", "ENTRY_ZONE",
+    "TP_PLAN", "TRAIL_SL", "PROFIT%", "RSI", "SINYAL", "LEVELS", "VOL_UI", "Score", "REGIME_UI"
 ]
 
 st.dataframe(
