@@ -1,8 +1,6 @@
 streamlit
 pandas
 numpy
-yfinance
 requests
-streamlit-autorefresh
-lxml
-html5lib
+yfinance
+plotly
