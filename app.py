@@ -196,13 +196,13 @@ def get_daily_data(symbol: str, period: str = "6mo", interval: str = "1d") -> pd
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=120)
-def get_intraday_5m(symbol: str) -> pd.DataFrame:
+@st.cache_data(ttl=60)
+def get_intraday_1m(symbol: str) -> pd.DataFrame:
     try:
         df = yf.download(
             symbol,
-            period="5d",
-            interval="5m",
+            period="1d",
+            interval="1m",
             auto_adjust=False,
             progress=False,
             threads=False
@@ -518,7 +518,7 @@ def compute_scalp_score(close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5
 # =========================================================
 # ROW BUILDER
 # =========================================================
-def build_row(symbol: str, daily_df: pd.DataFrame, intraday_5m: pd.DataFrame, live_price: float):
+def build_row(symbol: str, daily_df: pd.DataFrame, intraday_1m: pd.DataFrame, live_price: float):
     df = calc_indicators(daily_df)
     if len(df) < 30:
         return None
@@ -555,14 +555,49 @@ def build_row(symbol: str, daily_df: pd.DataFrame, intraday_5m: pd.DataFrame, li
     to_tp = ((tp1 - now_price) / now_price * 100) if now_price else 0.0
 
     intraday_rsi = np.nan
-    if not intraday_5m.empty and "Close" in intraday_5m.columns:
-        intra = calc_indicators(intraday_5m)
-        intraday_rsi = latest(intra["RSI"])
+    macd_1m = np.nan
+    macd_signal_1m = np.nan
+    macd_hist_1m = np.nan
+    macd_hist_prev_1m = np.nan
+    sinyal_1m = "TUNGGU"
+
+    if not intraday_1m.empty and "Close" in intraday_1m.columns:
+        intra = calc_indicators(intraday_1m)
+
+        if len(intra) >= 35:
+            intraday_rsi = latest(intra["RSI"])
+            macd_1m = latest(intra["MACD"])
+            macd_signal_1m = latest(intra["MACD_SIGNAL"])
+            macd_hist_1m = latest(intra["MACD_HIST"])
+            macd_hist_prev_1m = float(intra["MACD_HIST"].iloc[-2])
+
+            macd_mulai_menanjak = (
+                macd_hist_1m > macd_hist_prev_1m
+                and macd_1m > macd_signal_1m
+            )
+            macd_death_cross_atau_turun = (
+                macd_1m < macd_signal_1m
+                or macd_hist_1m < macd_hist_prev_1m
+            )
+
+            if macd_mulai_menanjak and 45 <= intraday_rsi <= 70:
+                sinyal_1m = "ENTRI"
+            elif macd_death_cross_atau_turun:
+                sinyal_1m = "KELUAR"
+            else:
+                sinyal_1m = "TUNGGU"
 
     trend = get_trend(close_, ma20, ma50)
     rsi_sig = get_rsi_signal(rsi, macd, macd_signal)
     sinyal = get_scalp_signal(close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5, vol_ma20, resistance, wick)
     aksi = get_scalp_action(sinyal, close_, entry)
+
+    # Override aksi scalping menggunakan sinyal 1 menit
+    # MACD 1M menanjak = ENTRI, MACD 1M death cross/turun = KELUAR
+    if sinyal_1m == "ENTRI":
+        aksi = "ENTRI"
+    elif sinyal_1m == "KELUAR":
+        aksi = "KELUAR"
 
     scalp_score = compute_scalp_score(close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5, vol_ma20, resistance, wick)
     val = close_ * vol if not pd.isna(close_) and not pd.isna(vol) else np.nan
@@ -584,7 +619,11 @@ def build_row(symbol: str, daily_df: pd.DataFrame, intraday_5m: pd.DataFrame, li
         "to_tp": to_tp,
         "rsi": rsi,
         "rsi_sig": rsi_sig,
-        "rsi_5m": intraday_rsi,
+        "rsi_1m": intraday_rsi,
+        "macd_1m": macd_1m,
+        "macd_signal_1m": macd_signal_1m,
+        "macd_hist_1m": macd_hist_1m,
+        "sinyal_1m": sinyal_1m,
         "val": val,
         "trend": trend,
         "score_scalp": scalp_score,
@@ -599,7 +638,7 @@ def run_live_monitor(symbols, use_websocket):
             if daily.empty:
                 continue
 
-            intra5 = get_intraday_5m(symbol)
+            intra1 = get_intraday_1m(symbol)
 
             if use_websocket:
                 live_price = get_live_price_from_ws(symbol)
@@ -608,7 +647,7 @@ def run_live_monitor(symbols, use_websocket):
             else:
                 live_price = get_live_price_yf(symbol)
 
-            row = build_row(symbol, daily, intra5, live_price)
+            row = build_row(symbol, daily, intra1, live_price)
             if row is not None and not pd.isna(row["now"]):
                 rows.append(row)
         except Exception:
@@ -641,6 +680,8 @@ def bg_wick(v):
 
 def bg_aksi(v):
     mapping = {
+        "ENTRI": "#16a34a",
+        "KELUAR": "#dc2626",
         "BELI SEKARANG": "#7c3aed",
         "KEJAR RINGAN": "#1d4ed8",
         "TUNGGU PEMICU": "#b45309",
@@ -656,6 +697,14 @@ def bg_sinyal(v):
         "SIAP SCALPING": "#16a34a",
         "PANTAU": "#2563eb",
         "TERLALU PANAS": "#ea580c",
+        "TUNGGU": "#111827"
+    }
+    return mapping.get(v, "#334155")
+
+def bg_sinyal_1m(v):
+    mapping = {
+        "ENTRI": "#16a34a",
+        "KELUAR": "#dc2626",
         "TUNGGU": "#111827"
     }
     return mapping.get(v, "#334155")
@@ -750,7 +799,7 @@ def make_html_table(df: pd.DataFrame, title: str, sub: str):
         width: 100%;
         border-collapse: collapse;
         font-size: 11px;
-        min-width: 1450px;
+        min-width: 1550px;
     }}
     .custom-table th {{
         background: #184574;
@@ -792,6 +841,7 @@ def make_html_table(df: pd.DataFrame, title: str, sub: str):
             <th>WICK</th>
             <th>AKSI</th>
             <th>SINYAL</th>
+            <th>SINYAL 1M</th>
             <th>RVOL</th>
             <th>AREA BELI</th>
             <th>HARGA SEKARANG</th>
@@ -802,7 +852,7 @@ def make_html_table(df: pd.DataFrame, title: str, sub: str):
             <th>% KE TP1</th>
             <th>STATUS RSI</th>
             <th>RSI</th>
-            <th>RSI 5M</th>
+            <th>RSI 1M</th>
             <th>NILAI</th>
             <th>TREND</th>
           </tr>
@@ -820,6 +870,7 @@ def make_html_table(df: pd.DataFrame, title: str, sub: str):
             <td style="background:{bg_wick(row['wick'])};color:#fff;">{fmt_pct(row['wick'])}</td>
             <td style="background:{bg_aksi(row['aksi'])};color:#fff;">{row['aksi']}</td>
             <td style="background:{bg_sinyal(row['sinyal'])};color:#fff;">{row['sinyal']}</td>
+            <td style="background:{bg_sinyal_1m(row['sinyal_1m'])};color:#fff;">{row['sinyal_1m']}</td>
             <td style="background:{bg_rvol(row['rvol'])};color:#fff;">{fmt_pct(row['rvol'])}</td>
             <td style="background:{bg_price('entry')};color:#fff;">{fmt_price(row['entry'])}</td>
             <td style="background:{bg_price('now')};color:#fff;">{fmt_price(row['now'])}</td>
@@ -830,7 +881,7 @@ def make_html_table(df: pd.DataFrame, title: str, sub: str):
             <td style="background:{bg_to_tp(row['to_tp'])};color:#fff;">{fmt_pct(row['to_tp'])}</td>
             <td style="background:{bg_rsi_sig(row['rsi_sig'])};color:#fff;">{row['rsi_sig']}</td>
             <td style="background:{bg_rsi(row['rsi'])};color:#fff;">{rsi_cell_text(row['rsi'])}</td>
-            <td style="background:{bg_rsi(row['rsi_5m'])};color:#fff;">{rsi_cell_text(row['rsi_5m'])}</td>
+            <td style="background:{bg_rsi(row['rsi_1m'])};color:#fff;">{rsi_cell_text(row['rsi_1m'])}</td>
             <td style="background:#183b69;color:#fff;">{human_value(row['val'])}</td>
             <td style="background:{bg_trend(row['trend'])};color:#fff;">{row['trend']}</td>
         </tr>
@@ -840,7 +891,7 @@ def make_html_table(df: pd.DataFrame, title: str, sub: str):
         </tbody>
       </table>
       </div>
-      <div class="footer-line">MODE SCALPING KETAT WEBSOCKET | 1-5 saham | breakout, EMA9, volume, RSI, MACD | live stream</div>
+      <div class="footer-line">MODE SCALPING KETAT | RSI 1M + MACD 1M | ENTRI/KELUAR otomatis | live stream</div>
     </div>
     </body>
     </html>
@@ -878,7 +929,7 @@ def show_detail_chart(df: pd.DataFrame, symbol_name: str):
 # =========================================================
 st.title("SCALPING KETAT REAL-TIME — WEBSOCKET")
 st.markdown(
-    '<div class="small-note">fokus scalping ketat | 1-5 saham pilihan | WebSocket Twelve Data + fallback yfinance | panel live aman untuk Streamlit</div>',
+    '<div class="small-note">fokus scalping ketat | RSI 1M + MACD 1M | WebSocket Twelve Data + fallback yfinance</div>',
     unsafe_allow_html=True
 )
 
@@ -1003,18 +1054,18 @@ def render_live_panel():
 
     st.subheader("Ranking Live")
     rank_df = display_df[[
-        "symbol", "now", "gain", "rvol", "rsi", "rsi_5m",
-        "trend", "score_scalp", "sinyal", "aksi"
+        "symbol", "now", "gain", "rvol", "rsi", "rsi_1m",
+        "sinyal_1m", "trend", "score_scalp", "sinyal", "aksi"
     ]].copy()
     rank_df.columns = [
-        "EMITEN", "HARGA", "KENAIKAN", "RVOL", "RSI", "RSI 5M",
-        "TREND", "SKOR SCALPING", "SINYAL", "AKSI"
+        "EMITEN", "HARGA", "KENAIKAN", "RVOL", "RSI", "RSI 1M",
+        "SINYAL 1M", "TREND", "SKOR SCALPING", "SINYAL", "AKSI"
     ]
     rank_df["HARGA"] = rank_df["HARGA"].apply(fmt_price)
     rank_df["KENAIKAN"] = rank_df["KENAIKAN"].apply(fmt_pct)
     rank_df["RVOL"] = rank_df["RVOL"].apply(fmt_pct)
     rank_df["RSI"] = rank_df["RSI"].apply(rsi_cell_text)
-    rank_df["RSI 5M"] = rank_df["RSI 5M"].apply(rsi_cell_text)
+    rank_df["RSI 1M"] = rank_df["RSI 1M"].apply(rsi_cell_text)
     st.dataframe(rank_df, use_container_width=True, height=260)
 
     selected_row_df = display_df[display_df["full_symbol"] == selected_symbol]
@@ -1031,7 +1082,7 @@ def render_live_panel():
     d3.metric("KENAIKAN", fmt_pct(selected_row["gain"]))
     d4.metric("RVOL", fmt_pct(selected_row["rvol"]))
     d5.metric("SKOR SCALPING", int(selected_row["score_scalp"]))
-    d6.metric("RSI 5M", rsi_cell_text(selected_row["rsi_5m"]))
+    d6.metric("RSI 1M", rsi_cell_text(selected_row["rsi_1m"]))
 
     show_detail_chart(selected_df, selected_row["symbol"])
 
@@ -1039,6 +1090,7 @@ def render_live_panel():
     c1, c2, c3 = st.columns(3)
     with c1:
         st.write(f"**Sinyal:** {selected_row['sinyal']}")
+        st.write(f"**Sinyal 1M:** {selected_row['sinyal_1m']}")
         st.write(f"**Aksi:** {selected_row['aksi']}")
         st.write(f"**Trend:** {selected_row['trend']}")
     with c2:
@@ -1048,14 +1100,14 @@ def render_live_panel():
     with c3:
         st.write(f"**Batas Rugi:** {fmt_price(selected_row['sl'])}")
         st.write(f"**RSI:** {rsi_cell_text(selected_row['rsi'])}")
-        st.write(f"**RSI 5M:** {rsi_cell_text(selected_row['rsi_5m'])}")
+        st.write(f"**RSI 1M:** {rsi_cell_text(selected_row['rsi_1m'])}")
 
     if telegram_enabled and telegram_bot_token and telegram_chat_id:
         top_row = display_df.iloc[0]
         alert_key = f"{top_row['symbol']}-{int(top_row['score_scalp'])}-{top_row['sinyal']}-{fmt_price(top_row['now'])}"
         last_alert_key = st.session_state.get("last_alert_key", "")
 
-        if top_row["score_scalp"] >= 70 and top_row["sinyal"] in ["SCALPING KUAT", "SIAP SCALPING"]:
+        if top_row["sinyal_1m"] == "ENTRI" or (top_row["score_scalp"] >= 70 and top_row["sinyal"] in ["SCALPING KUAT", "SIAP SCALPING"]):
             if alert_key != last_alert_key:
                 message = (
                     f"🚨 <b>ALERT SCALPING</b>\n"
@@ -1063,6 +1115,7 @@ def render_live_panel():
                     f"<b>{top_row['symbol']}</b>\n"
                     f"💰 Harga: <b>{fmt_price(top_row['now'])}</b>\n"
                     f"📍 Sinyal: <b>{top_row['sinyal']}</b>\n"
+                    f"⏱️ Sinyal 1M: <b>{top_row['sinyal_1m']}</b>\n"
                     f"⚡ Instruksi: <b>{top_row['aksi']}</b>\n"
                     f"🏆 Skor Scalping: <b>{int(top_row['score_scalp'])}</b>\n"
                     f"⚡ RVOL: <b>{fmt_pct(top_row['rvol'])}</b>\n"
