@@ -559,6 +559,10 @@ def build_row(symbol: str, daily_df: pd.DataFrame, intraday_1m: pd.DataFrame, li
     macd_signal_1m = np.nan
     macd_hist_1m = np.nan
     macd_hist_prev_1m = np.nan
+    close_1m = np.nan
+    ema9_1m = np.nan
+    vol_1m = np.nan
+    vol_ma5_1m = np.nan
     sinyal_1m = "TUNGGU"
 
     if not intraday_1m.empty and "Close" in intraday_1m.columns:
@@ -570,19 +574,36 @@ def build_row(symbol: str, daily_df: pd.DataFrame, intraday_1m: pd.DataFrame, li
             macd_signal_1m = latest(intra["MACD_SIGNAL"])
             macd_hist_1m = latest(intra["MACD_HIST"])
             macd_hist_prev_1m = float(intra["MACD_HIST"].iloc[-2])
+            close_1m = latest(intra["Close"])
+            ema9_1m = latest(intra["EMA9"])
+            vol_1m = latest(intra["Volume"])
+            vol_ma5_1m = latest(intra["VOL_MA5"])
 
             macd_mulai_menanjak = (
-                macd_hist_1m > macd_hist_prev_1m
+                not pd.isna(macd_1m)
+                and not pd.isna(macd_signal_1m)
+                and not pd.isna(macd_hist_1m)
+                and not pd.isna(macd_hist_prev_1m)
                 and macd_1m > macd_signal_1m
+                and macd_hist_1m > macd_hist_prev_1m
             )
-            macd_death_cross_atau_turun = (
-                macd_1m < macd_signal_1m
-                or macd_hist_1m < macd_hist_prev_1m
+            macd_death_cross = (
+                not pd.isna(macd_1m)
+                and not pd.isna(macd_signal_1m)
+                and macd_1m < macd_signal_1m
             )
+            rsi_sehat = not pd.isna(intraday_rsi) and 50 <= intraday_rsi <= 68
+            rsi_lemah = not pd.isna(intraday_rsi) and intraday_rsi < 45
+            harga_di_atas_ema9 = not pd.isna(close_1m) and not pd.isna(ema9_1m) and close_1m > ema9_1m
+            harga_patah_ema9 = not pd.isna(close_1m) and not pd.isna(ema9_1m) and close_1m < ema9_1m
+            volume_aktif_1m = not pd.isna(vol_1m) and not pd.isna(vol_ma5_1m) and vol_1m >= vol_ma5_1m
 
-            if macd_mulai_menanjak and 45 <= intraday_rsi <= 70:
+            entry_1m = macd_mulai_menanjak and rsi_sehat and harga_di_atas_ema9 and volume_aktif_1m
+            exit_1m = macd_death_cross or rsi_lemah or harga_patah_ema9
+
+            if entry_1m:
                 sinyal_1m = "ENTRI"
-            elif macd_death_cross_atau_turun:
+            elif exit_1m:
                 sinyal_1m = "KELUAR"
             else:
                 sinyal_1m = "TUNGGU"
@@ -592,8 +613,9 @@ def build_row(symbol: str, daily_df: pd.DataFrame, intraday_1m: pd.DataFrame, li
     sinyal = get_scalp_signal(close_, ema9, ma20, rsi, macd, macd_signal, vol, vol_ma5, vol_ma20, resistance, wick)
     aksi = get_scalp_action(sinyal, close_, entry)
 
-    # Override aksi scalping menggunakan sinyal 1 menit
-    # MACD 1M menanjak = ENTRI, MACD 1M death cross/turun = KELUAR
+    # Override aksi scalping menggunakan sinyal 1 menit yang sudah difilter ketat:
+    # ENTRI = MACD 1M naik + RSI sehat + harga di atas EMA9 1M + volume aktif
+    # KELUAR = MACD death cross atau RSI melemah atau harga patah EMA9 1M
     if sinyal_1m == "ENTRI":
         aksi = "ENTRI"
     elif sinyal_1m == "KELUAR":
@@ -623,6 +645,10 @@ def build_row(symbol: str, daily_df: pd.DataFrame, intraday_1m: pd.DataFrame, li
         "macd_1m": macd_1m,
         "macd_signal_1m": macd_signal_1m,
         "macd_hist_1m": macd_hist_1m,
+        "close_1m": close_1m,
+        "ema9_1m": ema9_1m,
+        "vol_1m": vol_1m,
+        "vol_ma5_1m": vol_ma5_1m,
         "sinyal_1m": sinyal_1m,
         "val": val,
         "trend": trend,
@@ -891,7 +917,7 @@ def make_html_table(df: pd.DataFrame, title: str, sub: str):
         </tbody>
       </table>
       </div>
-      <div class="footer-line">MODE SCALPING KETAT | RSI 1M + MACD 1M | ENTRI/KELUAR otomatis | live stream</div>
+      <div class="footer-line">MODE SCALPING KETAT | RSI 1M + MACD 1M + EMA9 1M + VOLUME 1M | ENTRI/KELUAR otomatis</div>
     </div>
     </body>
     </html>
@@ -929,7 +955,7 @@ def show_detail_chart(df: pd.DataFrame, symbol_name: str):
 # =========================================================
 st.title("SCALPING KETAT REAL-TIME — WEBSOCKET")
 st.markdown(
-    '<div class="small-note">fokus scalping ketat | RSI 1M + MACD 1M | WebSocket Twelve Data + fallback yfinance</div>',
+    '<div class="small-note">fokus scalping ketat | RSI 1M + MACD 1M + EMA9 1M + Volume 1M | WebSocket Twelve Data + fallback yfinance</div>',
     unsafe_allow_html=True
 )
 
