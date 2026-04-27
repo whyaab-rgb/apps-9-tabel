@@ -580,13 +580,13 @@ def build_row(symbol: str, daily_df: pd.DataFrame, intraday_1m: pd.DataFrame, li
             vol_ma5_1m = latest(intra["VOL_MA5"])
 
             rsi_prev_1m = float(intra["RSI"].iloc[-2])
+            rsi_min_10 = float(intra["RSI"].tail(10).min())
             rsi_min_5 = float(intra["RSI"].tail(5).min())
             close_prev_1m = float(intra["Close"].iloc[-2])
             low_recent = float(intra["Low"].tail(5).min())
 
             macd_mulai_menanjak = (
                 not pd.isna(macd_1m)
-                and not pd.isna(macd_signal_1m)
                 and not pd.isna(macd_hist_1m)
                 and not pd.isna(macd_hist_prev_1m)
                 and macd_hist_1m > macd_hist_prev_1m
@@ -605,25 +605,31 @@ def build_row(symbol: str, daily_df: pd.DataFrame, intraday_1m: pd.DataFrame, li
             )
 
             # =====================================================
-            # LOGIKA BARU: RSI 1M OVERSOLD LALU REBOUND
+            # LOGIKA FIX: RSI 1M OVERSOLD LALU REBOUND
+            # Lebih responsif: tidak wajib MACD cross penuh.
+            # Cukup RSI rebound + harga mantul + MACD histogram membaik.
             # =====================================================
             pernah_oversold = (
-                not pd.isna(rsi_min_5)
-                and rsi_min_5 <= 35
+                not pd.isna(rsi_min_10)
+                and rsi_min_10 <= 40
             )
 
             rsi_rebound = (
                 not pd.isna(intraday_rsi)
                 and not pd.isna(rsi_prev_1m)
-                and intraday_rsi > rsi_prev_1m
-                and 35 <= intraday_rsi <= 52
+                and 34 <= intraday_rsi <= 58
+                and intraday_rsi > rsi_min_10 + 2
+                and intraday_rsi >= rsi_prev_1m
             )
 
             harga_rebound = (
                 not pd.isna(close_1m)
                 and not pd.isna(close_prev_1m)
-                and close_1m > close_prev_1m
-                and close_1m > low_recent * 1.003
+                and not pd.isna(low_recent)
+                and (
+                    close_1m >= close_prev_1m
+                    or close_1m > low_recent * 1.001
+                )
             )
 
             harga_di_atas_ema9 = (
@@ -638,10 +644,14 @@ def build_row(symbol: str, daily_df: pd.DataFrame, intraday_1m: pd.DataFrame, li
                 and close_1m < ema9_1m
             )
 
+            # Volume 1M dari yfinance kadang 0/NaN. Jangan jadi penghalang absolut.
             volume_aktif_1m = (
-                not pd.isna(vol_1m)
-                and not pd.isna(vol_ma5_1m)
-                and vol_1m >= vol_ma5_1m * 0.8
+                pd.isna(vol_ma5_1m)
+                or vol_ma5_1m <= 0
+                or (
+                    not pd.isna(vol_1m)
+                    and vol_1m >= vol_ma5_1m * 0.6
+                )
             )
 
             rsi_sehat = (
@@ -651,10 +661,9 @@ def build_row(symbol: str, daily_df: pd.DataFrame, intraday_1m: pd.DataFrame, li
 
             rsi_lemah = (
                 not pd.isna(intraday_rsi)
-                and intraday_rsi < 38
+                and intraday_rsi < 32
             )
 
-            # Entry momentum normal: lanjut naik setelah tren kuat.
             entry_momentum_1m = (
                 macd_bull_confirm
                 and macd_mulai_menanjak
@@ -663,25 +672,34 @@ def build_row(symbol: str, daily_df: pd.DataFrame, intraday_1m: pd.DataFrame, li
                 and volume_aktif_1m
             )
 
-            # Entry rebound: RSI sempat oversold, lalu mulai mantul.
-            entry_rebound_oversold_1m = (
-                pernah_oversold
-                and rsi_rebound
-                and harga_rebound
-                and macd_mulai_menanjak
-                and volume_aktif_1m
-            )
+            rebound_score = 0
+            if pernah_oversold:
+                rebound_score += 1
+            if rsi_rebound:
+                rebound_score += 1
+            if harga_rebound:
+                rebound_score += 1
+            if macd_mulai_menanjak:
+                rebound_score += 1
+            if volume_aktif_1m:
+                rebound_score += 1
+            if harga_di_atas_ema9:
+                rebound_score += 1
+
+            entry_rebound_oversold_1m = rebound_score >= 4
+            pantau_rebound_1m = rebound_score == 3
 
             exit_1m = (
                 macd_death_cross
                 or rsi_lemah
-                or harga_patah_ema9
-            )
+            ) and not entry_rebound_oversold_1m
 
             if entry_rebound_oversold_1m:
                 sinyal_1m = "ENTRI REBOUND"
             elif entry_momentum_1m:
                 sinyal_1m = "ENTRI"
+            elif pantau_rebound_1m:
+                sinyal_1m = "PANTAU REBOUND"
             elif exit_1m:
                 sinyal_1m = "KELUAR"
             else:
@@ -810,6 +828,7 @@ def bg_sinyal_1m(v):
     mapping = {
         "ENTRI": "#16a34a",
         "ENTRI REBOUND": "#2563eb",
+        "PANTAU REBOUND": "#d97706",
         "KELUAR": "#dc2626",
         "TUNGGU": "#111827"
     }
